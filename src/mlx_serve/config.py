@@ -60,7 +60,12 @@ class ModelConfig:
     max_kv_cache_size: int = (
         0  # KV cache token capacity for prompt caching (--max-kv-cache-size); 0 = model default
     )
-
+    kv_bits: int = 0
+    kv_quant_scheme: str = ""
+    reasoning_parser: str = ""
+    tool_call_parser: str = ""
+    prefill_step_size: int = 2048
+    quantized_kv_start: int = 0
 
 @dataclass
 class MonitoringConfig:
@@ -92,6 +97,12 @@ def _load() -> tuple[dict[str, ModelConfig], int, int, int, int, MonitoringConfi
             hf_path=entry["hf_path"],
             context_length=entry.get("context_length", 0),
             max_kv_cache_size=entry.get("max_kv_cache_size", 0),
+            kv_bits=entry.get("kv_bits", 0),
+            kv_quant_scheme=entry.get("kv_quant_scheme", ""),
+            reasoning_parser=entry.get("reasoning_parser", ""),
+            tool_call_parser=entry.get("tool_call_parser", ""),
+            prefill_step_size=entry.get("prefill_step_size", ""),
+            quantized_kv_start=entry.get("quantized_kv_start", 0),
         )
 
     # Monitoring settings (optional section in models.yaml)

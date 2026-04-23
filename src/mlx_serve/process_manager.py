@@ -80,7 +80,24 @@ def _build_command(model_cfg: config.ModelConfig) -> list[str]:
     if model_cfg.context_length > 0:
         cmd += ["--max-tokens", str(model_cfg.context_length)]
     if model_cfg.max_kv_cache_size > 0:
-        cmd += ["--max-kv-cache-size", str(model_cfg.max_kv_cache_size)]
+        if model_cfg.type == "vision":
+            cmd += ["--max-kv-size", str(model_cfg.max_kv_cache_size)]
+        else:
+            cmd += ["--max-kv-cache-size", str(model_cfg.max_kv_cache_size)]
+
+    if model_cfg.kv_bits > 0:
+        cmd += ["--kv-bits", str(model_cfg.kv_bits)]
+    if model_cfg.kv_quant_scheme:
+        cmd += ["--kv-quant-scheme", model_cfg.kv_quant_scheme]
+    if model_cfg.prefill_step_size:
+        cmd += ["--prefill-step-size", str(model_cfg.prefill_step_size)]
+    # vision models don't support these, only lm
+    if model_cfg.type != "vision":
+        if model_cfg.reasoning_parser:
+            cmd += ["--reasoning-parser", model_cfg.reasoning_parser]
+        if model_cfg.tool_call_parser:
+            cmd += ["--tool-call-parser", model_cfg.tool_call_parser]
+    cmd += ["--quantized-kv-start", str(model_cfg.quantized_kv_start)]
     return cmd
 
 
