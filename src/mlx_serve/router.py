@@ -14,7 +14,7 @@ from typing import Any
 import httpx
 import psutil
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, Security, UploadFile
-from fastapi.responses import Response, StreamingResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from . import config, events, inline_manager, metrics, process_manager
@@ -470,8 +470,6 @@ async def _instrumented_proxy_response(
     cold_start: bool,
 ) -> Any:
     """Forward non-streaming request and record metrics."""
-    from fastapi.responses import JSONResponse
-
     request_id = str(uuid.uuid4())
     resp = await _HTTP_CLIENT.post(url, json=body, headers=_forward_headers(headers))
     end = time.monotonic()
@@ -517,21 +515,66 @@ async def _instrumented_stream_response(
     model_name: str,
     request_start: float,
     cold_start: bool,
-) -> StreamingResponse:
-    """Forward streaming request, measure TTFT, and record metrics."""
+):
+    """Forward streaming request, measure TTFT, and record metrics.
+
+    The upstream connection is opened and its status checked *before* the
+    SSE response is committed, so upstream 4xx/5xx propagate to the client
+    with their real status code instead of vanishing into an empty 200
+    stream (which clients like OpenWebUI render as a silent blank message).
+    """
     request_id = str(uuid.uuid4())
     first_token_time: float | None = None
     completion_tokens = 0
     prompt_tokens_from_usage: int | None = None
     completion_tokens_from_usage: int | None = None
 
+    upstream_request = _HTTP_CLIENT.build_request(
+        "POST", url, json=body, headers=_forward_headers(headers)
+    )
+    resp = await _HTTP_CLIENT.send(upstream_request, stream=True)
+
+    if resp.status_code >= 400:
+        raw = await resp.aread()
+        await resp.aclose()
+        try:
+            payload = json.loads(raw)
+        except json.JSONDecodeError:
+            payload = {"detail": raw.decode(errors="replace")}
+        error_msg = None
+        if isinstance(payload, dict):
+            error_msg = payload.get("detail")
+            if not error_msg:
+                err = payload.get("error")
+                error_msg = err.get("message") if isinstance(err, dict) else err
+        if not isinstance(error_msg, str) or not error_msg:
+            error_msg = raw.decode(errors="replace")[:500]
+        logger.warning(
+            "Upstream rejected streaming request for %s: HTTP %d — %s",
+            model_name,
+            resp.status_code,
+            error_msg,
+        )
+        metrics.record_request(
+            metrics.RequestMetrics(
+                request_id=request_id,
+                model=model_name,
+                endpoint="/v1/chat/completions",
+                timestamp=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                started_at=request_start,
+                total_duration_ms=round((time.monotonic() - request_start) * 1000, 1),
+                status_code=resp.status_code,
+                error=error_msg,
+                cold_start=cold_start,
+            )
+        )
+        return JSONResponse(content=payload, status_code=resp.status_code)
+
     async def generate():
         nonlocal first_token_time, completion_tokens
         nonlocal prompt_tokens_from_usage, completion_tokens_from_usage
 
-        async with _HTTP_CLIENT.stream(
-            "POST", url, json=body, headers=_forward_headers(headers)
-        ) as resp:
+        try:
             async for chunk in resp.aiter_lines():
                 if not chunk.startswith("data:"):
                     yield chunk + "\n"
@@ -561,6 +604,8 @@ async def _instrumented_stream_response(
                         completion_tokens_from_usage = usage.get("completion_tokens")
                 except (json.JSONDecodeError, KeyError):
                     pass
+        finally:
+            await resp.aclose()
 
         # Record metrics after stream completes
         end = time.monotonic()
