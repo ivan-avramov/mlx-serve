@@ -97,6 +97,8 @@ def _build_command(model_cfg: config.ModelConfig) -> list[str]:
             cmd += ["--reasoning-parser", model_cfg.reasoning_parser]
         if model_cfg.tool_call_parser:
             cmd += ["--tool-call-parser", model_cfg.tool_call_parser]
+    if model_cfg.enable_thinking:
+        cmd += ["--enable-thinking"]
     cmd += ["--quantized-kv-start", str(model_cfg.quantized_kv_start)]
     return cmd
 

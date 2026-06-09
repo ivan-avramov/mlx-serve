@@ -66,6 +66,8 @@ class ModelConfig:
     tool_call_parser: str = ""
     prefill_step_size: int = 2048
     quantized_kv_start: int = 0
+    enable_thinking: bool = False  # pass --enable-thinking to the subprocess so the
+    # model's server-side thinking default is ON (clients can still override per-request)
 
 @dataclass
 class MonitoringConfig:
@@ -103,6 +105,7 @@ def _load() -> tuple[dict[str, ModelConfig], int, int, int, int, MonitoringConfi
             tool_call_parser=entry.get("tool_call_parser", ""),
             prefill_step_size=entry.get("prefill_step_size", ""),
             quantized_kv_start=entry.get("quantized_kv_start", 0),
+            enable_thinking=entry.get("enable_thinking", False),
         )
 
     # Monitoring settings (optional section in models.yaml)
