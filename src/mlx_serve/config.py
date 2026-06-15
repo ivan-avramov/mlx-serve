@@ -66,6 +66,13 @@ class ModelConfig:
     tool_call_parser: str = ""
     prefill_step_size: int = 2048
     quantized_kv_start: int = 0
+    # MLX Metal buffer-pool cap (GB). 0 = auto-derive in mlx-vlm at startup from
+    # n_heads x prefill_step x max_kv_cache_size (+2 GB margin), which bounds RSS to
+    # ~= active_peak + cap without throttling intra-chunk score reuse. Set >0 to override.
+    cache_limit_gb: float = 0.0
+    # MLX total-memory backstop, as a fraction of physical RAM (capped at the Metal
+    # recommended working set). MLX evicts the pool before the OS swaps. 0 = off.
+    memory_limit_frac: float = 0.85
     enable_thinking: bool = False  # pass --enable-thinking to the subprocess so the
     # model's server-side thinking default is ON (clients can still override per-request)
 
@@ -105,6 +112,8 @@ def _load() -> tuple[dict[str, ModelConfig], int, int, int, int, MonitoringConfi
             tool_call_parser=entry.get("tool_call_parser", ""),
             prefill_step_size=entry.get("prefill_step_size", ""),
             quantized_kv_start=entry.get("quantized_kv_start", 0),
+            cache_limit_gb=entry.get("cache_limit_gb", 0.0),
+            memory_limit_frac=entry.get("memory_limit_frac", 0.85),
             enable_thinking=entry.get("enable_thinking", False),
         )
 

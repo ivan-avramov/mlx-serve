@@ -100,6 +100,10 @@ def _build_command(model_cfg: config.ModelConfig) -> list[str]:
     if model_cfg.enable_thinking:
         cmd += ["--enable-thinking"]
     cmd += ["--quantized-kv-start", str(model_cfg.quantized_kv_start)]
+    if model_cfg.cache_limit_gb and model_cfg.cache_limit_gb > 0:
+        cmd += ["--cache-limit-gb", str(model_cfg.cache_limit_gb)]
+    if model_cfg.memory_limit_frac and model_cfg.memory_limit_frac > 0:
+        cmd += ["--memory-limit-frac", str(model_cfg.memory_limit_frac)]
     return cmd
 
 
