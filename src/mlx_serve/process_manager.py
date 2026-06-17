@@ -99,6 +99,16 @@ def _build_command(model_cfg: config.ModelConfig) -> list[str]:
             cmd += ["--tool-call-parser", model_cfg.tool_call_parser]
     if model_cfg.enable_thinking:
         cmd += ["--enable-thinking"]
+    # Speculative decoding flags (mlx-vlm / vision only). draft_kind drives it;
+    # the suffix knobs are no-ops for other kinds. Omitted fields keep defaults.
+    if model_cfg.type == "vision" and model_cfg.draft_kind:
+        cmd += ["--draft-kind", model_cfg.draft_kind]
+        if model_cfg.draft_block_size > 0:
+            cmd += ["--draft-block-size", str(model_cfg.draft_block_size)]
+        if model_cfg.suffix_min_match > 0:
+            cmd += ["--suffix-min-match", str(model_cfg.suffix_min_match)]
+        if model_cfg.draft_cooldown > 0:
+            cmd += ["--draft-cooldown", str(model_cfg.draft_cooldown)]
     cmd += ["--quantized-kv-start", str(model_cfg.quantized_kv_start)]
     if model_cfg.cache_limit_gb and model_cfg.cache_limit_gb > 0:
         cmd += ["--cache-limit-gb", str(model_cfg.cache_limit_gb)]

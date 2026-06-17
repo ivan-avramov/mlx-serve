@@ -75,6 +75,13 @@ class ModelConfig:
     memory_limit_frac: float = 0.85
     enable_thinking: bool = False  # pass --enable-thinking to the subprocess so the
     # model's server-side thinking default is ON (clients can still override per-request)
+    # Speculative decoding (vision / mlx-vlm only). draft_kind="suffix" enables the
+    # drafter-free n-gram speculator; the rest tune it. Empty/0 => not passed.
+    draft_kind: str = ""  # "suffix" | "dflash" | "eagle3" | "mtp"
+    draft_block_size: int = 0  # suffix: max draft (proposal) length
+    suffix_min_match: int = 0  # suffix: minimum n-gram match length (default 2)
+    draft_cooldown: int = 0  # suffix: consecutive 0-accept rounds before pausing (0=off)
+
 
 @dataclass
 class MonitoringConfig:
@@ -115,6 +122,10 @@ def _load() -> tuple[dict[str, ModelConfig], int, int, int, int, MonitoringConfi
             cache_limit_gb=entry.get("cache_limit_gb", 0.0),
             memory_limit_frac=entry.get("memory_limit_frac", 0.85),
             enable_thinking=entry.get("enable_thinking", False),
+            draft_kind=entry.get("draft_kind", ""),
+            draft_block_size=entry.get("draft_block_size", 0),
+            suffix_min_match=entry.get("suffix_min_match", 0),
+            draft_cooldown=entry.get("draft_cooldown", 0),
         )
 
     # Monitoring settings (optional section in models.yaml)
