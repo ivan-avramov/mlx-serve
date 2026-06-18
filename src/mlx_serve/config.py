@@ -62,6 +62,7 @@ class ModelConfig:
     )
     kv_bits: int = 0
     kv_quant_scheme: str = ""
+    kv_quant_mode: str = ""  # "mse" (default) | "prod" (TQ key codec + 1-bit QJL residual)
     reasoning_parser: str = ""
     tool_call_parser: str = ""
     prefill_step_size: int = 2048
@@ -115,6 +116,7 @@ def _load() -> tuple[dict[str, ModelConfig], int, int, int, int, MonitoringConfi
             max_kv_cache_size=entry.get("max_kv_cache_size", 0),
             kv_bits=entry.get("kv_bits", 0),
             kv_quant_scheme=entry.get("kv_quant_scheme", ""),
+            kv_quant_mode=entry.get("kv_quant_mode", ""),
             reasoning_parser=entry.get("reasoning_parser", ""),
             tool_call_parser=entry.get("tool_call_parser", ""),
             prefill_step_size=entry.get("prefill_step_size", ""),

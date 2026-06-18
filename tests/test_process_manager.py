@@ -51,3 +51,17 @@ def test_build_command_omits_draft_flags_by_default(monkeypatch):
     cmd2 = pm._build_command(ModelConfig(name="t", type="vision", hf_path="x", draft_kind="suffix"))
     assert "--draft-kind" in cmd2
     assert "--draft-cooldown" not in cmd2
+
+
+def test_build_command_emits_kv_quant_mode(monkeypatch):
+    """--kv-quant-mode is emitted iff ModelConfig.kv_quant_mode is set."""
+    monkeypatch.setattr(pm, "_MLX_VLM_SERVER", Path("/"))
+
+    on = ModelConfig(name="t", type="vision", hf_path="x",
+                     kv_bits=3, kv_quant_scheme="turboquant", kv_quant_mode="prod")
+    off = ModelConfig(name="t", type="vision", hf_path="x",
+                      kv_bits=3, kv_quant_scheme="turboquant")  # mode unset
+
+    cmd_on = pm._build_command(on)
+    assert cmd_on[cmd_on.index("--kv-quant-mode") + 1] == "prod"
+    assert "--kv-quant-mode" not in pm._build_command(off)

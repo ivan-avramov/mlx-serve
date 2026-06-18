@@ -89,6 +89,8 @@ def _build_command(model_cfg: config.ModelConfig) -> list[str]:
         cmd += ["--kv-bits", str(model_cfg.kv_bits)]
     if model_cfg.kv_quant_scheme:
         cmd += ["--kv-quant-scheme", model_cfg.kv_quant_scheme]
+    if model_cfg.kv_quant_mode:
+        cmd += ["--kv-quant-mode", model_cfg.kv_quant_mode]
     if model_cfg.prefill_step_size:
         cmd += ["--prefill-step-size", str(model_cfg.prefill_step_size)]
     # vision models don't support these, only lm
