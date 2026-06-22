@@ -82,6 +82,7 @@ class ModelConfig:
     draft_block_size: int = 0  # suffix: max draft (proposal) length
     suffix_min_match: int = 0  # suffix: minimum n-gram match length (default 2)
     draft_cooldown: int = 0  # suffix: consecutive 0-accept rounds before pausing (0=off)
+    draft_model: str = ""  # mtp/dflash/eagle3: path to the split drafter folder (--draft-model)
 
 
 @dataclass
@@ -128,6 +129,7 @@ def _load() -> tuple[dict[str, ModelConfig], int, int, int, int, MonitoringConfi
             draft_block_size=entry.get("draft_block_size", 0),
             suffix_min_match=entry.get("suffix_min_match", 0),
             draft_cooldown=entry.get("draft_cooldown", 0),
+            draft_model=entry.get("draft_model", ""),
         )
 
     # Monitoring settings (optional section in models.yaml)

@@ -105,6 +105,9 @@ def _build_command(model_cfg: config.ModelConfig) -> list[str]:
     # the suffix knobs are no-ops for other kinds. Omitted fields keep defaults.
     if model_cfg.type == "vision" and model_cfg.draft_kind:
         cmd += ["--draft-kind", model_cfg.draft_kind]
+        # mtp/dflash/eagle3 need a separate split drafter folder; suffix is drafter-free.
+        if model_cfg.draft_model:
+            cmd += ["--draft-model", model_cfg.draft_model]
         if model_cfg.draft_block_size > 0:
             cmd += ["--draft-block-size", str(model_cfg.draft_block_size)]
         if model_cfg.suffix_min_match > 0:
