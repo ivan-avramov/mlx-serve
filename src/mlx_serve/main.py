@@ -15,6 +15,7 @@ from fastapi import FastAPI
 
 from . import config, events, inline_manager, logging_config, metrics, process_manager
 from .router import close_client, router
+from .router import completions as _bare_completions
 from .router import dashboard as _bare_dashboard
 from .router import get_events as _bare_events
 from .router import get_metrics as _bare_metrics
@@ -112,3 +113,9 @@ app.add_api_route("/health", _bare_health, include_in_schema=False)
 app.add_api_route("/metrics", _bare_metrics, include_in_schema=False)
 app.add_api_route("/events", _bare_events, include_in_schema=False)
 app.add_api_route("/dashboard", _bare_dashboard, include_in_schema=False)
+
+# Legacy text-completions endpoint also accessible without /v1 prefix.
+# POST, so methods must be set explicitly (add_api_route defaults to GET).
+app.add_api_route(
+    "/completions", _bare_completions, methods=["POST"], include_in_schema=False
+)

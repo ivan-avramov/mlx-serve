@@ -130,6 +130,39 @@ def test_chat_completions_wrong_type(client):
     assert "use the correct endpoint" in resp.json()["detail"]["error"]["message"]
 
 
+def test_completions_model_not_found(client):
+    resp = client.post("/v1/completions", json={"model": "nope", "prompt": "hi"})
+    assert resp.status_code == 404
+
+
+def test_completions_wrong_type(client):
+    resp = client.post("/v1/completions", json={"model": "test-embed", "prompt": "hi"})
+    assert resp.status_code == 404
+    assert "use the correct endpoint" in resp.json()["detail"]["error"]["message"]
+
+
+def test_bare_completions_model_not_found(client):
+    # The bare (no /v1 prefix) alias mirrors /status, /health, ...
+    resp = client.post("/completions", json={"model": "nope", "prompt": "hi"})
+    assert resp.status_code == 404
+
+
+def test_completions_routes_registered(client):
+    """Both /v1/completions and /completions POST routes must exist and the
+    /v1/chat/completions route must remain registered (unchanged)."""
+    routes = {
+        (r.path, frozenset(getattr(r, "methods", None) or set()))
+        for r in client.app.routes
+    }
+    paths = {p for p, _ in routes}
+    assert "/v1/completions" in paths
+    assert "/completions" in paths
+    assert "/v1/chat/completions" in paths  # existing route untouched
+    # The new routes must accept POST.
+    assert any(p == "/v1/completions" and "POST" in m for p, m in routes)
+    assert any(p == "/completions" and "POST" in m for p, m in routes)
+
+
 def test_embeddings_model_not_found(client):
     resp = client.post("/v1/embeddings", json={"model": "nope", "input": "hello"})
     assert resp.status_code == 404

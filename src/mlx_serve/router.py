@@ -393,8 +393,22 @@ async def delete_model(model_id: str) -> dict:
 # ---------------------------------------------------------------------------
 
 
-@router.post("/chat/completions")
-async def chat_completions(request: Request) -> Any:
+async def _proxy_text_generation(request: Request, backend_path: str) -> Any:
+    """
+    Shared proxy logic for the chat (`/v1/chat/completions`) and legacy text
+    (`/v1/completions`) endpoints.
+
+    Both endpoints behave identically — model-name validation, type gate,
+    keep_alive handling, inline unload, subprocess `ensure_model` load, the
+    `body["model"] = hf_path` rewrite, and streaming vs non-streaming
+    forwarding. The ONLY difference is the backend target path the request is
+    forwarded to (and the metrics endpoint label derived from it), so the two
+    routes are thin wrappers around this coroutine.
+
+    Args:
+        backend_path: the mlx-vlm backend path to forward to, e.g.
+            "/v1/chat/completions" or "/v1/completions".
+    """
     try:
         body = await request.json()
     except Exception:
@@ -425,7 +439,7 @@ async def chat_completions(request: Request) -> Any:
     if keep_alive is not None:
         process_manager.set_keep_alive(keep_alive)
 
-    logger.info(f"POST /v1/chat/completions model={model_name} stream={body.get('stream', False)}")
+    logger.info(f"POST {backend_path} model={model_name} stream={body.get('stream', False)}")
 
     # Free any in-process model before loading subprocess
     await inline_manager.unload()
@@ -439,7 +453,7 @@ async def chat_completions(request: Request) -> Any:
     # rewrite it to the HuggingFace path so the request passes through.
     body["model"] = model_cfg.hf_path
 
-    target = f"http://127.0.0.1:{config.MLX_PORT}/v1/chat/completions"
+    target = f"http://127.0.0.1:{config.MLX_PORT}{backend_path}"
 
     if body.get("stream"):
         return await _instrumented_stream_response(
@@ -449,6 +463,7 @@ async def chat_completions(request: Request) -> Any:
             model_name,
             request_start,
             cold_start,
+            endpoint=backend_path,
         )
     else:
         return await _instrumented_proxy_response(
@@ -458,7 +473,31 @@ async def chat_completions(request: Request) -> Any:
             model_name,
             request_start,
             cold_start,
+            endpoint=backend_path,
         )
+
+
+@router.post("/chat/completions")
+async def chat_completions(request: Request) -> Any:
+    return await _proxy_text_generation(request, "/v1/chat/completions")
+
+
+# ---------------------------------------------------------------------------
+# POST /completions  (legacy OpenAI text-completions endpoint)
+#
+# Mirrors /chat/completions exactly (same validation, ensure_model load,
+# body["model"]=hf_path rewrite, streaming/non-streaming forwarding) but
+# forwards to the backend's legacy text path /v1/completions instead of
+# /v1/chat/completions. Needed by clients like BFCL_v4 that drive the legacy
+# text-completions API. Registered under the /v1 router prefix -> /v1/completions
+# (a bare /completions alias is also added in main.py, matching the
+# /status, /health, ... bare-route convention).
+# ---------------------------------------------------------------------------
+
+
+@router.post("/completions")
+async def completions(request: Request) -> Any:
+    return await _proxy_text_generation(request, "/v1/completions")
 
 
 async def _instrumented_proxy_response(
@@ -468,6 +507,7 @@ async def _instrumented_proxy_response(
     model_name: str,
     request_start: float,
     cold_start: bool,
+    endpoint: str = "/v1/chat/completions",
 ) -> Any:
     """Forward non-streaming request and record metrics."""
     request_id = str(uuid.uuid4())
@@ -491,7 +531,7 @@ async def _instrumented_proxy_response(
         metrics.RequestMetrics(
             request_id=request_id,
             model=model_name,
-            endpoint="/v1/chat/completions",
+            endpoint=endpoint,
             timestamp=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             started_at=request_start,
             total_duration_ms=round(total_ms, 1),
@@ -515,6 +555,7 @@ async def _instrumented_stream_response(
     model_name: str,
     request_start: float,
     cold_start: bool,
+    endpoint: str = "/v1/chat/completions",
 ):
     """Forward streaming request, measure TTFT, and record metrics.
 
@@ -559,7 +600,7 @@ async def _instrumented_stream_response(
             metrics.RequestMetrics(
                 request_id=request_id,
                 model=model_name,
-                endpoint="/v1/chat/completions",
+                endpoint=endpoint,
                 timestamp=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                 started_at=request_start,
                 total_duration_ms=round((time.monotonic() - request_start) * 1000, 1),
@@ -624,7 +665,7 @@ async def _instrumented_stream_response(
             metrics.RequestMetrics(
                 request_id=request_id,
                 model=model_name,
-                endpoint="/v1/chat/completions",
+                endpoint=endpoint,
                 timestamp=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                 started_at=request_start,
                 total_duration_ms=round(total_ms, 1),
