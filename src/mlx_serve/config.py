@@ -9,7 +9,7 @@ Config discovery order:
 """
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import yaml
@@ -74,8 +74,13 @@ class ModelConfig:
     # MLX total-memory backstop, as a fraction of physical RAM (capped at the Metal
     # recommended working set). MLX evicts the pool before the OS swaps. 0 = off.
     memory_limit_frac: float = 0.85
-    enable_thinking: bool = False  # pass --enable-thinking to the subprocess so the
-    # model's server-side thinking default is ON (clients can still override per-request)
+    # Per-model generation defaults (temperature/top_p/top_k/min_p/presence_penalty/
+    # max_tokens/thinking_budget/enable_thinking/…). Opaque to mlx-serve: it forwards the
+    # whole dict verbatim as one --generation-defaults JSON arg, so a new generation param
+    # needs no mlx-serve change. mlx-vlm applies each entry as a default ONLY when the
+    # request omits it (request params always win). enable_thinking lives here now (there is
+    # no dedicated top-level enable_thinking field — a stale one fails loud in _load).
+    generation_defaults: dict = field(default_factory=dict)
     # Speculative decoding (vision / mlx-vlm only). draft_kind="suffix" enables the
     # drafter-free n-gram speculator; the rest tune it. Empty/0 => not passed.
     draft_kind: str = ""  # "suffix" | "dflash" | "eagle3" | "mtp"
@@ -109,6 +114,12 @@ def _load() -> tuple[dict[str, ModelConfig], int, int, int, int, MonitoringConfi
                 f"Model '{entry['name']}' has invalid type '{entry['type']}'. "
                 f"Must be one of: {sorted(_VALID_TYPES)}"
             )
+        if "enable_thinking" in entry:
+            raise ValueError(
+                f"Model '{entry['name']}' has a top-level 'enable_thinking' key. It moved "
+                f"into the 'generation_defaults' block — put 'enable_thinking: true' there "
+                f"instead so all generation params live in one place."
+            )
         models[entry["name"]] = ModelConfig(
             name=entry["name"],
             type=entry["type"],
@@ -124,7 +135,7 @@ def _load() -> tuple[dict[str, ModelConfig], int, int, int, int, MonitoringConfi
             quantized_kv_start=entry.get("quantized_kv_start", 0),
             cache_limit_gb=entry.get("cache_limit_gb", 0.0),
             memory_limit_frac=entry.get("memory_limit_frac", 0.85),
-            enable_thinking=entry.get("enable_thinking", False),
+            generation_defaults=entry.get("generation_defaults", {}),
             draft_kind=entry.get("draft_kind", ""),
             draft_block_size=entry.get("draft_block_size", 0),
             suffix_min_match=entry.get("suffix_min_match", 0),

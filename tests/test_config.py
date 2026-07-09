@@ -102,13 +102,13 @@ models:
     assert cfg.MODELS["my-model"].hf_path == "mlx-community/test"
     assert cfg.MODELS["my-model"].context_length == 4096
     assert cfg.MODELS["my-model"].max_kv_cache_size == 8192
-    assert cfg.MODELS["my-model"].enable_thinking is False  # default
+    assert cfg.MODELS["my-model"].generation_defaults == {}  # default: empty
     assert cfg.MLX_PORT == 8091
     assert cfg.MANAGER_PORT == 8095
 
 
-def test_config_parses_enable_thinking(tmp_path, monkeypatch):
-    """enable_thinking is parsed from the model entry (default False)."""
+def test_config_parses_generation_defaults(tmp_path, monkeypatch):
+    """generation_defaults is parsed verbatim as an opaque dict (default empty)."""
     config_file = tmp_path / "models.yaml"
     config_file.write_text("""
 mlx_port: 8091
@@ -116,10 +116,13 @@ manager_port: 8095
 inactivity_timeout_seconds: 600
 startup_timeout_seconds: 120
 models:
-  - name: thinker
+  - name: tuned
     type: vision
     hf_path: mlx-community/test
-    enable_thinking: true
+    generation_defaults:
+      temperature: 0.3
+      top_p: 0.95
+      enable_thinking: true
   - name: plain
     type: vision
     hf_path: mlx-community/test2
@@ -131,8 +134,32 @@ models:
 
     importlib.reload(cfg)
 
-    assert cfg.MODELS["thinker"].enable_thinking is True
-    assert cfg.MODELS["plain"].enable_thinking is False
+    assert cfg.MODELS["tuned"].generation_defaults == {
+        "temperature": 0.3, "top_p": 0.95, "enable_thinking": True,
+    }
+    assert cfg.MODELS["plain"].generation_defaults == {}
+
+
+def test_config_raises_on_top_level_enable_thinking(tmp_path, monkeypatch):
+    """A stale top-level enable_thinking: key fails loud and fast (it moved into
+    generation_defaults) so nothing silently disables thinking during migration."""
+    config_file = tmp_path / "models.yaml"
+    config_file.write_text("""
+mlx_port: 8091
+manager_port: 8095
+models:
+  - name: stale
+    type: vision
+    hf_path: mlx-community/test
+    enable_thinking: true
+""")
+    monkeypatch.setenv("MLX_SERVE_CONFIG", str(config_file))
+
+    import importlib
+    import mlx_serve.config as cfg
+
+    with pytest.raises(ValueError, match="enable_thinking"):
+        importlib.reload(cfg)
 
 
 def test_config_invalid_type(tmp_path, monkeypatch):

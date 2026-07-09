@@ -6,6 +6,7 @@ State machine: IDLE -> LOADING -> READY / FAILED -> IDLE (on inactivity/shutdown
 
 import asyncio
 import contextlib
+import json
 import logging
 import pathlib
 import subprocess
@@ -99,8 +100,11 @@ def _build_command(model_cfg: config.ModelConfig) -> list[str]:
             cmd += ["--reasoning-parser", model_cfg.reasoning_parser]
         if model_cfg.tool_call_parser:
             cmd += ["--tool-call-parser", model_cfg.tool_call_parser]
-    if model_cfg.enable_thinking:
-        cmd += ["--enable-thinking"]
+    # Per-model generation defaults, forwarded opaquely as one JSON arg (mlx-serve does not
+    # enumerate the keys). mlx-vlm applies each entry as a default only when the request
+    # omits it. enable_thinking travels inside this block now.
+    if model_cfg.generation_defaults:
+        cmd += ["--generation-defaults", json.dumps(model_cfg.generation_defaults)]
     # Speculative decoding flags (mlx-vlm / vision only). draft_kind drives it;
     # the suffix knobs are no-ops for other kinds. Omitted fields keep defaults.
     if model_cfg.type == "vision" and model_cfg.draft_kind:

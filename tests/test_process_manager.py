@@ -1,21 +1,37 @@
 """Tests for subprocess command construction."""
 
+import json
 from pathlib import Path
 
 from mlx_serve import process_manager as pm
 from mlx_serve.config import ModelConfig
 
 
-def test_build_command_includes_enable_thinking(monkeypatch):
-    """--enable-thinking is emitted iff ModelConfig.enable_thinking is True."""
+def test_build_command_emits_generation_defaults_json(monkeypatch):
+    """generation_defaults is forwarded as one opaque --generation-defaults JSON arg.
+
+    mlx-serve does not enumerate the keys — it round-trips the whole dict, so a new
+    generation param needs no mlx-serve change. enable_thinking now lives inside the
+    block (no dedicated --enable-thinking flag)."""
     # Bypass the executable-exists guard so the test runs without mlx-vlm installed.
     monkeypatch.setattr(pm, "_MLX_VLM_SERVER", Path("/"))
 
-    on = ModelConfig(name="t", type="vision", hf_path="x", enable_thinking=True)
-    off = ModelConfig(name="t", type="vision", hf_path="x", enable_thinking=False)
+    defaults = {"temperature": 0.3, "top_p": 0.95, "top_k": 20, "enable_thinking": True}
+    cfg = ModelConfig(name="t", type="vision", hf_path="x", generation_defaults=defaults)
+    cmd = pm._build_command(cfg)
 
-    assert "--enable-thinking" in pm._build_command(on)
-    assert "--enable-thinking" not in pm._build_command(off)
+    assert json.loads(cmd[cmd.index("--generation-defaults") + 1]) == defaults
+    # enable_thinking is no longer its own flag — it travels inside the block.
+    assert "--enable-thinking" not in cmd
+
+
+def test_build_command_omits_generation_defaults_when_empty(monkeypatch):
+    """No generation_defaults -> no --generation-defaults flag (and no --enable-thinking)."""
+    monkeypatch.setattr(pm, "_MLX_VLM_SERVER", Path("/"))
+
+    cmd = pm._build_command(ModelConfig(name="t", type="vision", hf_path="x"))
+    assert "--generation-defaults" not in cmd
+    assert "--enable-thinking" not in cmd
 
 
 def test_build_command_emits_suffix_draft_flags(monkeypatch):
