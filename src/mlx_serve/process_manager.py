@@ -85,6 +85,8 @@ def _build_command(model_cfg: config.ModelConfig) -> list[str]:
             cmd += ["--max-kv-size", str(model_cfg.max_kv_cache_size)]
         else:
             cmd += ["--max-kv-cache-size", str(model_cfg.max_kv_cache_size)]
+    if model_cfg.kv_prealloc_tokens > 0 and model_cfg.type == "vision":
+        cmd += ["--kv-prealloc-tokens", str(model_cfg.kv_prealloc_tokens)]
 
     if model_cfg.kv_bits > 0:
         cmd += ["--kv-bits", str(model_cfg.kv_bits)]

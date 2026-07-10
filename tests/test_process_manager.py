@@ -69,6 +69,31 @@ def test_build_command_omits_draft_flags_by_default(monkeypatch):
     assert "--draft-cooldown" not in cmd2
 
 
+def test_kv_prealloc_tokens_emitted_for_vision(monkeypatch):
+    """--kv-prealloc-tokens is emitted for vision workers when kv_prealloc_tokens > 0."""
+    monkeypatch.setattr(pm, "_MLX_VLM_SERVER", Path("/"))
+
+    cfg = ModelConfig(name="m", type="vision", hf_path="x",
+                      max_kv_cache_size=262144, kv_prealloc_tokens=262144)
+    cmd = pm._build_command(cfg)
+    assert "--kv-prealloc-tokens" in cmd
+    assert cmd[cmd.index("--kv-prealloc-tokens") + 1] == "262144"
+
+
+def test_kv_prealloc_tokens_omitted_when_zero_or_non_vision(monkeypatch):
+    """No --kv-prealloc-tokens when unset, and never for non-vision (text) workers."""
+    monkeypatch.setattr(pm, "_MLX_VLM_SERVER", Path("/"))
+    monkeypatch.setattr(pm, "_MLX_LM_SERVER", Path("/"))
+
+    cmd = pm._build_command(ModelConfig(name="m", type="vision", hf_path="x"))
+    assert "--kv-prealloc-tokens" not in cmd
+
+    cmd2 = pm._build_command(
+        ModelConfig(name="m", type="text", hf_path="x", kv_prealloc_tokens=8192)
+    )
+    assert "--kv-prealloc-tokens" not in cmd2
+
+
 def test_build_command_emits_kv_quant_mode(monkeypatch):
     """--kv-quant-mode is emitted iff ModelConfig.kv_quant_mode is set."""
     monkeypatch.setattr(pm, "_MLX_VLM_SERVER", Path("/"))

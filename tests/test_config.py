@@ -162,6 +162,55 @@ models:
         importlib.reload(cfg)
 
 
+def test_config_parses_kv_prealloc_tokens(tmp_path, monkeypatch):
+    """kv_prealloc_tokens is parsed (default 0) and accepted when <= max_kv_cache_size."""
+    config_file = tmp_path / "models.yaml"
+    config_file.write_text("""
+mlx_port: 8091
+manager_port: 8095
+models:
+  - name: preallocated
+    type: vision
+    hf_path: mlx-community/test
+    max_kv_cache_size: 262144
+    kv_prealloc_tokens: 262144
+  - name: plain
+    type: vision
+    hf_path: mlx-community/test2
+""")
+    monkeypatch.setenv("MLX_SERVE_CONFIG", str(config_file))
+
+    import importlib
+    import mlx_serve.config as cfg
+
+    importlib.reload(cfg)
+
+    assert cfg.MODELS["preallocated"].kv_prealloc_tokens == 262144
+    assert cfg.MODELS["plain"].kv_prealloc_tokens == 0  # default
+
+
+def test_kv_prealloc_over_cap_fails_loud(tmp_path, monkeypatch):
+    """kv_prealloc_tokens > max_kv_cache_size fails loud at parse time."""
+    config_file = tmp_path / "models.yaml"
+    config_file.write_text("""
+mlx_port: 8091
+manager_port: 8095
+models:
+  - name: m
+    type: vision
+    hf_path: x
+    max_kv_cache_size: 262144
+    kv_prealloc_tokens: 300000
+""")
+    monkeypatch.setenv("MLX_SERVE_CONFIG", str(config_file))
+
+    import importlib
+    import mlx_serve.config as cfg
+
+    with pytest.raises(ValueError, match="kv_prealloc_tokens"):
+        importlib.reload(cfg)
+
+
 def test_config_invalid_type(tmp_path, monkeypatch):
     """Invalid model type raises ValueError."""
     config_file = tmp_path / "models.yaml"

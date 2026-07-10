@@ -67,6 +67,7 @@ class ModelConfig:
     tool_call_parser: str = ""
     prefill_step_size: int = 2048
     quantized_kv_start: int = 0
+    kv_prealloc_tokens: int = 0  # pre-alloc every KV cache to this token floor; must be <= max_kv_cache_size
     # MLX Metal buffer-pool cap (GB). 0 = auto-derive in mlx-vlm at startup from
     # n_heads x prefill_step x max_kv_cache_size (+2 GB margin), which bounds RSS to
     # ~= active_peak + cap without throttling intra-chunk score reuse. Set >0 to override.
@@ -133,6 +134,7 @@ def _load() -> tuple[dict[str, ModelConfig], int, int, int, int, MonitoringConfi
             tool_call_parser=entry.get("tool_call_parser", ""),
             prefill_step_size=entry.get("prefill_step_size", ""),
             quantized_kv_start=entry.get("quantized_kv_start", 0),
+            kv_prealloc_tokens=entry.get("kv_prealloc_tokens", 0),
             cache_limit_gb=entry.get("cache_limit_gb", 0.0),
             memory_limit_frac=entry.get("memory_limit_frac", 0.85),
             generation_defaults=entry.get("generation_defaults", {}),
@@ -142,6 +144,16 @@ def _load() -> tuple[dict[str, ModelConfig], int, int, int, int, MonitoringConfi
             draft_cooldown=entry.get("draft_cooldown", 0),
             draft_model=entry.get("draft_model", ""),
         )
+        if (
+            models[entry["name"]].kv_prealloc_tokens
+            and models[entry["name"]].max_kv_cache_size
+            and models[entry["name"]].kv_prealloc_tokens > models[entry["name"]].max_kv_cache_size
+        ):
+            raise ValueError(
+                f"Model '{entry['name']}': kv_prealloc_tokens "
+                f"({models[entry['name']].kv_prealloc_tokens}) exceeds max_kv_cache_size "
+                f"({models[entry['name']].max_kv_cache_size})."
+            )
 
     # Monitoring settings (optional section in models.yaml)
     mon_raw = data.get("monitoring", {})
