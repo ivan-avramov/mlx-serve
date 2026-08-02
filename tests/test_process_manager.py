@@ -1,7 +1,17 @@
-"""Tests for subprocess command construction."""
+"""Tests for subprocess command construction, and for process_manager lifecycle
+logic: failure cooldown and download-aware startup timeout.
 
+The lifecycle tests exercise the pure decision helpers plus ensure_model/
+_switch_model behavior, without spawning real MLX subprocesses.
+"""
+
+import importlib
 import json
+import time
 from pathlib import Path
+
+import pytest
+from fastapi import HTTPException
 
 from mlx_serve import process_manager as pm
 from mlx_serve.config import ModelConfig
@@ -106,3 +116,134 @@ def test_build_command_emits_kv_quant_mode(monkeypatch):
     cmd_on = pm._build_command(on)
     assert cmd_on[cmd_on.index("--kv-quant-mode") + 1] == "prod"
     assert "--kv-quant-mode" not in pm._build_command(off)
+
+
+@pytest.fixture()
+def reloaded_pm(tmp_config, log_dir):
+    """Reload config + process_manager against the temp config, fresh state."""
+    import mlx_serve.config
+
+    importlib.reload(mlx_serve.config)
+    import mlx_serve.events as events
+
+    events.configure(log_dir)
+
+    import mlx_serve.process_manager as process_manager
+
+    importlib.reload(process_manager)
+    return process_manager
+
+
+# ---------------------------------------------------------------------------
+# Bug 2 — failure cooldown / circuit breaker
+# ---------------------------------------------------------------------------
+
+
+def test_failure_cooldown_blocks_recent_failure(reloaded_pm):
+    reloaded_pm._record_failure("test-text-model", "startup_timeout")
+    assert reloaded_pm._failure_cooldown_remaining("test-text-model") > 0
+
+
+def test_failure_cooldown_expires_after_window(reloaded_pm):
+    reloaded_pm._record_failure("test-text-model", "startup_timeout")
+    # Pretend the failure happened a full cooldown ago.
+    reloaded_pm._last_failure_at = time.monotonic() - (
+        reloaded_pm.config.FAILURE_COOLDOWN + 1
+    )
+    assert reloaded_pm._failure_cooldown_remaining("test-text-model") == 0
+
+
+def test_failure_cooldown_only_affects_failed_model(reloaded_pm):
+    reloaded_pm._record_failure("test-text-model", "startup_timeout")
+    assert reloaded_pm._failure_cooldown_remaining("test-vision-model") == 0
+
+
+def test_clear_failure_resets_cooldown(reloaded_pm):
+    reloaded_pm._record_failure("test-text-model", "startup_timeout")
+    reloaded_pm._clear_failure()
+    assert reloaded_pm._failure_cooldown_remaining("test-text-model") == 0
+
+
+@pytest.mark.asyncio
+async def test_ensure_model_short_circuits_during_cooldown(reloaded_pm, monkeypatch):
+    """A request for a recently-failed model returns 503 immediately and
+    does NOT spawn another subprocess (the infinite-respawn bug)."""
+    spawned = False
+
+    async def fake_switch(model_name):
+        nonlocal spawned
+        spawned = True
+
+    monkeypatch.setattr(reloaded_pm, "_switch_model", fake_switch)
+    reloaded_pm._record_failure("test-text-model", "startup_timeout")
+
+    with pytest.raises(HTTPException) as exc:
+        await reloaded_pm.ensure_model("test-text-model")
+
+    assert exc.value.status_code == 503
+    assert spawned is False
+
+
+# ---------------------------------------------------------------------------
+# Bug 1 — download-aware readiness timeout + downloading state/event
+# ---------------------------------------------------------------------------
+
+
+def test_readiness_timeout_uses_download_timeout_when_not_cached(
+    reloaded_pm, monkeypatch
+):
+    monkeypatch.setattr(reloaded_pm, "_is_model_cached", lambda cfg: False)
+    cfg = reloaded_pm.config.MODELS["test-text-model"]
+    assert reloaded_pm._readiness_timeout(cfg) == reloaded_pm.config.DOWNLOAD_TIMEOUT
+
+
+def test_readiness_timeout_uses_startup_timeout_when_cached(reloaded_pm, monkeypatch):
+    monkeypatch.setattr(reloaded_pm, "_is_model_cached", lambda cfg: True)
+    cfg = reloaded_pm.config.MODELS["test-text-model"]
+    assert reloaded_pm._readiness_timeout(cfg) == reloaded_pm.config.STARTUP_TIMEOUT
+
+
+def test_diagnose_failure_reports_actual_timeout(reloaded_pm):
+    """On a startup/download timeout, the reported timeout_seconds reflects the
+    deadline actually used, not the bare STARTUP_TIMEOUT."""
+
+    class StillRunning:
+        returncode = None
+
+        def poll(self):
+            return None  # process alive -> this is a timeout, not a crash
+
+    reloaded_pm._process = StillRunning()
+    detail = reloaded_pm._diagnose_failure(
+        timeout_seconds=reloaded_pm.config.DOWNLOAD_TIMEOUT
+    )
+    assert detail["reason"] == "startup_timeout"
+    assert detail["timeout_seconds"] == reloaded_pm.config.DOWNLOAD_TIMEOUT
+
+
+@pytest.mark.asyncio
+async def test_switch_emits_downloading_event_when_not_cached(
+    reloaded_pm, monkeypatch
+):
+    """When a model isn't cached, the switch enters DOWNLOADING and emits a
+    model.downloading event so the hang is visible to the user."""
+    import mlx_serve.events as events
+
+    monkeypatch.setattr(reloaded_pm, "_is_model_cached", lambda cfg: False)
+    monkeypatch.setattr(reloaded_pm, "_MLX_LM_SERVER", Path("/"))
+
+    class FakeProc:
+        pid = 4321
+
+        def poll(self):
+            return None
+
+    monkeypatch.setattr(reloaded_pm.subprocess, "Popen", lambda *a, **k: FakeProc())
+    # Don't run the real health loop (would poll a nonexistent server).
+    monkeypatch.setattr(reloaded_pm.asyncio, "create_task", lambda coro: coro.close())
+
+    await reloaded_pm._switch_model("test-text-model")
+
+    downloading = events.get_events(event_type="model.downloading")
+    assert any(e["model"] == "test-text-model" for e in downloading)
+    assert reloaded_pm._state == reloaded_pm.ModelState.DOWNLOADING
