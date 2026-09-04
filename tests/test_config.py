@@ -189,6 +189,32 @@ models:
     assert cfg.MODELS["plain"].kv_prealloc_tokens == 0  # default
 
 
+def test_config_parses_moe_expand(tmp_path, monkeypatch):
+    """moe_expand is parsed verbatim as an opaque string (default empty)."""
+    config_file = tmp_path / "models.yaml"
+    config_file.write_text("""
+mlx_port: 8091
+manager_port: 8095
+models:
+  - name: expanded
+    type: text
+    hf_path: mlx-community/test
+    moe_expand: "27-39:20:0.8:0.5"
+  - name: plain
+    type: text
+    hf_path: mlx-community/test2
+""")
+    monkeypatch.setenv("MLX_SERVE_CONFIG", str(config_file))
+
+    import importlib
+    import mlx_serve.config as cfg
+
+    importlib.reload(cfg)
+
+    assert cfg.MODELS["expanded"].moe_expand == "27-39:20:0.8:0.5"
+    assert cfg.MODELS["plain"].moe_expand == ""  # default
+
+
 def test_kv_prealloc_over_cap_fails_loud(tmp_path, monkeypatch):
     """kv_prealloc_tokens > max_kv_cache_size fails loud at parse time."""
     config_file = tmp_path / "models.yaml"

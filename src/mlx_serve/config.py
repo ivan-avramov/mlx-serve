@@ -89,6 +89,9 @@ class ModelConfig:
     suffix_min_match: int = 0  # suffix: minimum n-gram match length (default 2)
     draft_cooldown: int = 0  # suffix: consecutive 0-accept rounds before pausing (0=off)
     draft_model: str = ""  # mtp/dflash/eagle3: path to the split drafter folder (--draft-model)
+    # Layer-scoped MoE expert-budget expansion (M34), CLI string "LS-LE:N:T:D".
+    # Empty => not passed; forwarded verbatim as --moe-expand for text and vision types.
+    moe_expand: str = ""
 
 
 @dataclass
@@ -143,6 +146,7 @@ def _load() -> tuple[dict[str, ModelConfig], int, int, int, int, MonitoringConfi
             suffix_min_match=entry.get("suffix_min_match", 0),
             draft_cooldown=entry.get("draft_cooldown", 0),
             draft_model=entry.get("draft_model", ""),
+            moe_expand=entry.get("moe_expand", ""),
         )
         if (
             models[entry["name"]].kv_prealloc_tokens

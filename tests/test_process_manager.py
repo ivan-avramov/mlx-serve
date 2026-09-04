@@ -118,6 +118,29 @@ def test_build_command_emits_kv_quant_mode(monkeypatch):
     assert "--kv-quant-mode" not in pm._build_command(off)
 
 
+def test_build_command_emits_moe_expand(monkeypatch):
+    """moe_expand is forwarded as --moe-expand <str> for both text and vision workers."""
+    monkeypatch.setattr(pm, "_MLX_VLM_SERVER", Path("/"))
+    monkeypatch.setattr(pm, "_MLX_LM_SERVER", Path("/"))
+
+    vision_cfg = ModelConfig(name="t", type="vision", hf_path="x", moe_expand="27-39:20:0.8:0.5")
+    cmd = pm._build_command(vision_cfg)
+    assert cmd[cmd.index("--moe-expand") + 1] == "27-39:20:0.8:0.5"
+
+    text_cfg = ModelConfig(name="t", type="text", hf_path="x", moe_expand="27-39:20:0.8:0.5")
+    cmd2 = pm._build_command(text_cfg)
+    assert cmd2[cmd2.index("--moe-expand") + 1] == "27-39:20:0.8:0.5"
+
+
+def test_build_command_omits_moe_expand_when_empty(monkeypatch):
+    """No moe_expand -> no --moe-expand flag."""
+    monkeypatch.setattr(pm, "_MLX_VLM_SERVER", Path("/"))
+    monkeypatch.setattr(pm, "_MLX_LM_SERVER", Path("/"))
+
+    assert "--moe-expand" not in pm._build_command(ModelConfig(name="t", type="vision", hf_path="x"))
+    assert "--moe-expand" not in pm._build_command(ModelConfig(name="t", type="text", hf_path="x"))
+
+
 @pytest.fixture()
 def reloaded_pm(tmp_config, log_dir):
     """Reload config + process_manager against the temp config, fresh state."""
