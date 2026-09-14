@@ -92,6 +92,18 @@ class ModelConfig:
     # Layer-scoped MoE expert-budget expansion (M34), CLI string "LS-LE:N:T:D".
     # Empty => not passed; forwarded verbatim as --moe-expand for text and vision types.
     moe_expand: str = ""
+    # Per-model mlx-vlm session retirement policy; None preserves worker defaults.
+    cache_session_shrink: bool | None = None
+
+    def __post_init__(self) -> None:
+        if self.cache_session_shrink is None:
+            return
+        if type(self.cache_session_shrink) is not bool:
+            raise ValueError(f"Model '{self.name}': cache_session_shrink must be a bool or null.")
+        if self.type != "vision":
+            raise ValueError(
+                f"Model '{self.name}': cache_session_shrink is only supported for type 'vision'."
+            )
 
 
 @dataclass
@@ -138,6 +150,7 @@ def _load() -> tuple[dict[str, ModelConfig], int, int, int, int, MonitoringConfi
             prefill_step_size=entry.get("prefill_step_size", ""),
             quantized_kv_start=entry.get("quantized_kv_start", 0),
             kv_prealloc_tokens=entry.get("kv_prealloc_tokens", 0),
+            cache_session_shrink=entry.get("cache_session_shrink"),
             cache_limit_gb=entry.get("cache_limit_gb", 0.0),
             memory_limit_frac=entry.get("memory_limit_frac", 0.85),
             generation_defaults=entry.get("generation_defaults", {}),

@@ -269,3 +269,53 @@ def test_config_monitoring_defaults(tmp_path, monkeypatch):
     assert cfg.MONITORING.metrics_history_size == 500
     assert cfg.MONITORING.events_history_size == 1000
     assert cfg.MONITORING.memory_sample_interval == 10
+
+
+def _load_shrink_setting(tmp_path, monkeypatch, value="missing", model_type="vision"):
+    import yaml
+    from mlx_serve import config
+
+    entry = {"name": "configured", "type": model_type, "hf_path": "local-model"}
+    if value != "missing":
+        entry["cache_session_shrink"] = value
+    path = tmp_path / "session-policy.yaml"
+    path.write_text(yaml.safe_dump({"models": [entry]}))
+    monkeypatch.setattr(config, "_CONFIG_PATH", path)
+    return config._load()[0]["configured"]
+
+
+@pytest.mark.parametrize(
+    "value,expected", [("missing", None), (None, None), (True, True), (False, False)]
+)
+def test_cache_session_shrink_is_optional_strict_boolean(tmp_path, monkeypatch, value, expected):
+    model = _load_shrink_setting(tmp_path, monkeypatch, value)
+    assert model.cache_session_shrink is expected
+
+
+@pytest.mark.parametrize("value", ["on", "off", "true", "false", "", 0, 1, 0.0, 1.0, [], {}])
+def test_cache_session_shrink_rejects_non_boolean_values(tmp_path, monkeypatch, value):
+    with pytest.raises(ValueError, match="cache_session_shrink.*bool"):
+        _load_shrink_setting(tmp_path, monkeypatch, value)
+
+
+@pytest.mark.parametrize("model_type", ["text", "embedding", "tts", "stt"])
+@pytest.mark.parametrize("value", [True, False])
+def test_cache_session_shrink_rejects_unsupported_model_types(
+    tmp_path, monkeypatch, model_type, value
+):
+    with pytest.raises(ValueError, match="cache_session_shrink.*vision"):
+        _load_shrink_setting(tmp_path, monkeypatch, value, model_type)
+
+
+@pytest.mark.parametrize("model_type", ["text", "embedding", "tts", "stt"])
+def test_unset_cache_session_shrink_preserves_other_model_types(tmp_path, monkeypatch, model_type):
+    assert _load_shrink_setting(tmp_path, monkeypatch, model_type=model_type).cache_session_shrink is None
+
+
+def test_direct_model_config_validates_retirement_policy():
+    from mlx_serve.config import ModelConfig
+
+    with pytest.raises(ValueError, match="cache_session_shrink.*bool"):
+        ModelConfig(name="invalid", type="vision", hf_path="local-model", cache_session_shrink=1)
+    with pytest.raises(ValueError, match="cache_session_shrink.*vision"):
+        ModelConfig(name="invalid", type="text", hf_path="local-model", cache_session_shrink=False)

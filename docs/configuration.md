@@ -164,6 +164,24 @@ Defaults to `0` (no limit — the model retains as much KV state as fits in unif
 
 Only applies to `text` and `vision` model types. Setting a value limits the memory footprint of the KV cache — useful when running large models close to the unified memory limit.
 
+### `cache_session_shrink` (optional, vision only)
+
+Controls mlx-vlm's existing session-cache retirement policy for one model.
+`true` forwards `--cache-session-shrink on`; `false` forwards
+`--cache-session-shrink off`, overriding an inherited worker setting. Omitted
+or `null` forwards no flag and preserves the worker's default/environment.
+Only YAML booleans or `null` are accepted; strings and numbers are rejected.
+A non-null setting on a model type other than `vision` is rejected.
+
+With retirement enabled, supported KV caches release unused preallocated
+capacity after a turn and restore the configured full floor when used again.
+This setting does not lower `kv_prealloc_tokens` or change other models.
+It requires an mlx-vlm worker supporting `--cache-session-shrink`.
+
+```yaml
+cache_session_shrink: true
+```
+
 ### API key authentication (environment variable)
 
 Set `MLX_API_KEY` in the environment to require bearer token auth on all `/v1/*` endpoints:

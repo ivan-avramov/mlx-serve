@@ -7,6 +7,7 @@ _switch_model behavior, without spawning real MLX subprocesses.
 
 import importlib
 import json
+import os
 import time
 from pathlib import Path
 
@@ -270,3 +271,25 @@ async def test_switch_emits_downloading_event_when_not_cached(
     downloading = events.get_events(event_type="model.downloading")
     assert any(e["model"] == "test-text-model" for e in downloading)
     assert reloaded_pm._state == reloaded_pm.ModelState.DOWNLOADING
+
+
+@pytest.mark.parametrize("setting,expected", [(True, "on"), (False, "off")])
+def test_cache_session_shrink_forwards_explicit_policy(monkeypatch, setting, expected):
+    monkeypatch.setattr(pm, "_MLX_VLM_SERVER", Path("/"))
+    # The explicit per-model flag overrides the opposite inherited worker default.
+    inherited = "off" if setting else "on"
+    monkeypatch.setenv("MLX_VLM_SESSION_SHRINK_ON_RETIRE", inherited)
+    model = ModelConfig(
+        name="configured", type="vision", hf_path="local-model", cache_session_shrink=setting
+    )
+    command = pm._build_command(model)
+    assert command.count("--cache-session-shrink") == 1
+    assert command[command.index("--cache-session-shrink") + 1] == expected
+    assert os.environ["MLX_VLM_SESSION_SHRINK_ON_RETIRE"] == inherited
+
+
+def test_unset_cache_session_shrink_leaves_worker_default(monkeypatch):
+    monkeypatch.setattr(pm, "_MLX_VLM_SERVER", Path("/"))
+    monkeypatch.setenv("MLX_VLM_SESSION_SHRINK_ON_RETIRE", "on")
+    model = ModelConfig(name="unchanged", type="vision", hf_path="local-model")
+    assert "--cache-session-shrink" not in pm._build_command(model)
