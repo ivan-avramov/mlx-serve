@@ -100,3 +100,27 @@ async def test_upstream_success_still_streams_chunks(monkeypatch):
     assert fake.closed
     assert len(recorded) == 1
     assert recorded[0].status_code == 200
+
+
+async def test_streaming_path_forwards_session_headers_through_the_same_allowlist(monkeypatch):
+    """C102(a): the streaming proxy builds its upstream request with the same header allowlist
+    as the non-streaming path — a session id must survive both, PII headers neither."""
+    fake = FakeStreamingResponse(["data: [DONE]"])
+    client = FakeClient(fake)
+    sent = {}
+
+    def build_request(method, url, json=None, headers=None):
+        sent.update(headers or {})
+        return SimpleNamespace(method=method, url=url, json=json, headers=headers)
+
+    client.build_request = build_request
+    monkeypatch.setattr(router, "_HTTP_CLIENT", client)
+    monkeypatch.setattr(router.metrics, "record_request", lambda *_a, **_k: None)
+    incoming = {"X-Session-Id": "ses_stream", "X-OpenWebUI-User-Role": "admin",
+                "X-OpenWebUI-User-Email": "someone@example.com", "Cookie": "a=b"}
+    resp = await router._instrumented_stream_response(
+        "http://127.0.0.1:1/v1/chat/completions", {}, incoming, "test-model", time.monotonic(), False)
+    [c async for c in resp.body_iterator]
+    lowered = {k.lower(): v for k, v in sent.items()}
+    assert lowered.get("x-session-id") == "ses_stream"  # value preserved, name case kept
+    assert not {"x-openwebui-user-role", "x-openwebui-user-email", "cookie"} & set(lowered)

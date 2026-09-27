@@ -91,7 +91,26 @@ def _parse_keep_alive(value: str | int | float | None) -> int | None:
         return None
 
 
-_FORWARDED_HEADERS = {"content-type", "authorization", "accept", "x-request-id"}
+# Client → worker header allowlist. Everything else is dropped on purpose (cookies, Host,
+# OpenWebUI's user name/email/role headers, …). The session block (C102(a), 2026-09-27) lets
+# the worker's per-chat prompt cache pin a conversation on the id the client already sends:
+# opencode `x-session-id`/`x-session-affinity` (+ `x-parent-session-id` on subagents),
+# Claude Code `x-claude-code-session-id`, Codex CLI `session-id`, pi/OpenClaw `session_id`,
+# OpenWebUI `X-OpenWebUI-Chat-Id` (ENABLE_FORWARD_USER_INFO_HEADERS), Switchyard
+# `x-switchyard-session-id`, and the worker's own `X-MLX-VLM-Chat-Id`. Without these the
+# worker saw only anonymous hash-chain sessions (measured 2026-09-23, stack M45).
+_SESSION_HEADERS = {
+    "x-mlx-vlm-chat-id",
+    "x-session-id",
+    "x-session-affinity",
+    "x-parent-session-id",
+    "x-claude-code-session-id",
+    "x-openwebui-chat-id",
+    "session-id",
+    "session_id",
+    "x-switchyard-session-id",
+}
+_FORWARDED_HEADERS = {"content-type", "authorization", "accept", "x-request-id"} | _SESSION_HEADERS
 
 
 def _forward_headers(headers) -> dict:
