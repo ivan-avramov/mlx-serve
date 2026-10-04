@@ -319,3 +319,56 @@ def test_direct_model_config_validates_retirement_policy():
         ModelConfig(name="invalid", type="vision", hf_path="local-model", cache_session_shrink=1)
     with pytest.raises(ValueError, match="cache_session_shrink.*vision"):
         ModelConfig(name="invalid", type="text", hf_path="local-model", cache_session_shrink=False)
+
+
+def _load_attention_policy(tmp_path, monkeypatch, value="missing", **extra):
+    import yaml
+    from mlx_serve import config
+
+    entry = {"name": "configured", "type": "vision", "hf_path": "local-model", **extra}
+    if value != "missing":
+        entry["attention_policy"] = value
+    path = tmp_path / "attention-policy.yaml"
+    path.write_text(yaml.safe_dump({"models": [entry]}))
+    monkeypatch.setattr(config, "_CONFIG_PATH", path)
+    return config._load()[0]["configured"]
+
+
+@pytest.mark.parametrize(
+    "value,expected", [("missing", ""), ("", ""), ("auto", "auto"), ("fused_v1", "fused_v1")]
+)
+def test_attention_policy_loaded_from_registry(tmp_path, monkeypatch, value, expected):
+    assert _load_attention_policy(tmp_path, monkeypatch, value).attention_policy == expected
+
+
+@pytest.mark.parametrize("value", ["fused_v2", "FUSED_V1", "off", "none"])
+def test_attention_policy_rejects_unknown_value(tmp_path, monkeypatch, value):
+    with pytest.raises(ValueError, match="configured.*attention_policy.*fused_v1"):
+        _load_attention_policy(tmp_path, monkeypatch, value)
+
+
+def test_attention_policy_fused_v1_rejects_quantized_kv():
+    from mlx_serve.config import ModelConfig
+
+    with pytest.raises(ValueError, match="configured.*fused_v1.*kv_bits"):
+        ModelConfig(
+            name="configured", type="vision", hf_path="x", kv_bits=4, attention_policy="fused_v1"
+        )
+
+
+@pytest.mark.parametrize("model_type", ["text", "embedding", "tts", "stt"])
+def test_attention_policy_fused_v1_rejects_non_vision(model_type):
+    from mlx_serve.config import ModelConfig
+
+    with pytest.raises(ValueError, match="configured.*fused_v1.*vision"):
+        ModelConfig(name="configured", type=model_type, hf_path="x", attention_policy="fused_v1")
+
+
+def test_attention_policy_validation_runs_with_cache_session_shrink_set():
+    from mlx_serve.config import ModelConfig
+
+    with pytest.raises(ValueError, match="configured.*attention_policy"):
+        ModelConfig(
+            name="configured", type="vision", hf_path="x",
+            cache_session_shrink=True, attention_policy="bogus",
+        )  # fmt: skip

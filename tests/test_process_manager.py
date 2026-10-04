@@ -293,3 +293,54 @@ def test_unset_cache_session_shrink_leaves_worker_default(monkeypatch):
     monkeypatch.setenv("MLX_VLM_SESSION_SHRINK_ON_RETIRE", "on")
     model = ModelConfig(name="unchanged", type="vision", hf_path="local-model")
     assert "--cache-session-shrink" not in pm._build_command(model)
+
+
+# --- M57 attention_policy -------------------------------------------------------------------
+
+_GOLDEN_VISION_KW = dict(
+    name="g",
+    type="vision",
+    hf_path="org/m",
+    context_length=262144,
+    max_kv_cache_size=262144,
+    kv_prealloc_tokens=262144,
+    cache_session_shrink=True,
+    draft_kind="mtp",
+    draft_model="/d",
+    prefill_step_size=512,
+)
+_GOLDEN_VISION_CMD = [
+    "/", "--model", "org/m", "--host", "127.0.0.1", "--port", "{port}",
+    "--max-tokens", "262144", "--max-kv-size", "262144", "--kv-prealloc-tokens", "262144",
+    "--cache-session-shrink", "on", "--prefill-step-size", "512",
+    "--draft-kind", "mtp", "--draft-model", "/d",
+    "--quantized-kv-start", "0", "--memory-limit-frac", "0.85",
+]  # fmt: skip
+
+
+def _golden_vision_cmd():
+    # The worker port comes from the environment-derived config; everything else is literal.
+    return [str(pm.config.MLX_PORT) if a == "{port}" else a for a in _GOLDEN_VISION_CMD]
+
+
+@pytest.mark.parametrize("extra", [{}, {"attention_policy": ""}, {"attention_policy": "auto"}])
+def test_attention_policy_default_command_is_byte_identical(monkeypatch, extra):
+    monkeypatch.setattr(pm, "_MLX_VLM_SERVER", Path("/"))
+    cmd = pm._build_command(ModelConfig(**_GOLDEN_VISION_KW, **extra))
+    assert cmd == _golden_vision_cmd()
+
+
+def test_attention_policy_fused_v1_emitted_for_vision(monkeypatch):
+    monkeypatch.setattr(pm, "_MLX_VLM_SERVER", Path("/"))
+    cmd = pm._build_command(ModelConfig(**_GOLDEN_VISION_KW, attention_policy="fused_v1"))
+    assert cmd.count("--attention-policy") == 1
+    assert cmd[cmd.index("--attention-policy") + 1] == "fused_v1"
+    cmd.remove("--attention-policy")
+    cmd.remove("fused_v1")
+    assert cmd == _golden_vision_cmd()
+
+
+def test_attention_policy_not_emitted_for_text(monkeypatch):
+    monkeypatch.setattr(pm, "_MLX_LM_SERVER", Path("/"))
+    model = ModelConfig(name="t", type="text", hf_path="x", attention_policy="auto")
+    assert "--attention-policy" not in pm._build_command(model)

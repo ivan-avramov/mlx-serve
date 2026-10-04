@@ -51,6 +51,9 @@ def _find_config() -> Path:
 _CONFIG_PATH = _find_config()
 
 
+_ATTENTION_POLICIES = ("", "auto", "fused_v1")
+
+
 @dataclass
 class ModelConfig:
     name: str
@@ -94,8 +97,14 @@ class ModelConfig:
     moe_expand: str = ""
     # Per-model mlx-vlm session retirement policy; None preserves worker defaults.
     cache_session_shrink: bool | None = None
+    # M57 attention dispatch policy (vision only): "" / "auto" => worker default, not passed.
+    attention_policy: str = ""
 
     def __post_init__(self) -> None:
+        self._validate_cache_session_shrink()
+        self._validate_attention_policy()
+
+    def _validate_cache_session_shrink(self) -> None:
         if self.cache_session_shrink is None:
             return
         if type(self.cache_session_shrink) is not bool:
@@ -104,6 +113,24 @@ class ModelConfig:
             raise ValueError(
                 f"Model '{self.name}': cache_session_shrink is only supported for type 'vision'."
             )
+
+    def _validate_attention_policy(self) -> None:
+        if self.attention_policy not in _ATTENTION_POLICIES:
+            allowed = ", ".join(repr(v) for v in _ATTENTION_POLICIES)
+            raise ValueError(
+                f"Model '{self.name}': attention_policy {self.attention_policy!r} is invalid; "
+                f"allowed values: {allowed}."
+            )
+        if self.attention_policy == "fused_v1":
+            if self.type != "vision":
+                raise ValueError(
+                    f"Model '{self.name}': attention_policy 'fused_v1' requires type 'vision'."
+                )
+            if self.kv_bits != 0:
+                raise ValueError(
+                    f"Model '{self.name}': attention_policy 'fused_v1' requires kv_bits 0 "
+                    f"(got {self.kv_bits})."
+                )
 
 
 @dataclass
@@ -160,6 +187,7 @@ def _load() -> tuple[dict[str, ModelConfig], int, int, int, int, MonitoringConfi
             draft_cooldown=entry.get("draft_cooldown", 0),
             draft_model=entry.get("draft_model", ""),
             moe_expand=entry.get("moe_expand", ""),
+            attention_policy=entry.get("attention_policy", ""),
         )
         if (
             models[entry["name"]].kv_prealloc_tokens

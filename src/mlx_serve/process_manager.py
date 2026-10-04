@@ -140,6 +140,8 @@ def _build_command(model_cfg: config.ModelConfig) -> list[str]:
         cmd += ["--kv-prealloc-tokens", str(model_cfg.kv_prealloc_tokens)]
     if model_cfg.type == "vision" and model_cfg.cache_session_shrink is not None:
         cmd += ["--cache-session-shrink", "on" if model_cfg.cache_session_shrink else "off"]
+    if model_cfg.type == "vision" and model_cfg.attention_policy not in ("", "auto"):
+        cmd += ["--attention-policy", model_cfg.attention_policy]
 
     if model_cfg.kv_bits > 0:
         cmd += ["--kv-bits", str(model_cfg.kv_bits)]
