@@ -372,3 +372,36 @@ def test_attention_policy_validation_runs_with_cache_session_shrink_set():
             name="configured", type="vision", hf_path="x",
             cache_session_shrink=True, attention_policy="bogus",
         )  # fmt: skip
+
+
+def _load_lazy_setting(tmp_path, monkeypatch, value="missing", model_type="vision"):
+    import yaml
+    from mlx_serve import config
+
+    entry = {"name": "configured", "type": model_type, "hf_path": "local-model"}
+    if value != "missing":
+        entry["lazy_prompt_embeddings"] = value
+    path = tmp_path / "lazy.yaml"
+    path.write_text(yaml.safe_dump({"models": [entry]}))
+    monkeypatch.setattr(config, "_CONFIG_PATH", path)
+    return config._load()[0]["configured"]
+
+
+@pytest.mark.parametrize(
+    "value,expected", [("missing", None), (None, None), (True, True), (False, False)]
+)
+def test_lazy_prompt_embeddings_loaded_strict_bool(tmp_path, monkeypatch, value, expected):
+    assert _load_lazy_setting(tmp_path, monkeypatch, value).lazy_prompt_embeddings is expected
+
+
+@pytest.mark.parametrize("value", ["on", "true", "", 0, 1, 1.0, [], {}])
+def test_lazy_prompt_embeddings_rejects_non_bool(tmp_path, monkeypatch, value):
+    with pytest.raises(ValueError, match="configured.*lazy_prompt_embeddings.*bool"):
+        _load_lazy_setting(tmp_path, monkeypatch, value)
+
+
+@pytest.mark.parametrize("model_type", ["text", "embedding", "tts", "stt"])
+@pytest.mark.parametrize("value", [True, False])
+def test_lazy_prompt_embeddings_rejects_non_vision(tmp_path, monkeypatch, model_type, value):
+    with pytest.raises(ValueError, match="configured.*lazy_prompt_embeddings.*vision"):
+        _load_lazy_setting(tmp_path, monkeypatch, value, model_type)

@@ -142,6 +142,8 @@ def _build_command(model_cfg: config.ModelConfig) -> list[str]:
         cmd += ["--cache-session-shrink", "on" if model_cfg.cache_session_shrink else "off"]
     if model_cfg.type == "vision" and model_cfg.attention_policy not in ("", "auto"):
         cmd += ["--attention-policy", model_cfg.attention_policy]
+    if model_cfg.type == "vision" and model_cfg.lazy_prompt_embeddings is True:
+        cmd += ["--lazy-prompt-embeddings"]
 
     if model_cfg.kv_bits > 0:
         cmd += ["--kv-bits", str(model_cfg.kv_bits)]

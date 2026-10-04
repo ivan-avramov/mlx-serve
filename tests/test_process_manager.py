@@ -344,3 +344,18 @@ def test_attention_policy_not_emitted_for_text(monkeypatch):
     monkeypatch.setattr(pm, "_MLX_LM_SERVER", Path("/"))
     model = ModelConfig(name="t", type="text", hf_path="x", attention_policy="auto")
     assert "--attention-policy" not in pm._build_command(model)
+
+
+@pytest.mark.parametrize("extra", [{}, {"lazy_prompt_embeddings": None}, {"lazy_prompt_embeddings": False}])
+def test_lazy_prompt_embeddings_default_command_is_byte_identical(monkeypatch, extra):
+    monkeypatch.setattr(pm, "_MLX_VLM_SERVER", Path("/"))
+    cmd = pm._build_command(ModelConfig(**_GOLDEN_VISION_KW, **extra))
+    assert cmd == _golden_vision_cmd()
+
+
+def test_lazy_prompt_embeddings_true_emits_bare_flag_for_vision(monkeypatch):
+    monkeypatch.setattr(pm, "_MLX_VLM_SERVER", Path("/"))
+    cmd = pm._build_command(ModelConfig(**_GOLDEN_VISION_KW, lazy_prompt_embeddings=True))
+    assert cmd.count("--lazy-prompt-embeddings") == 1
+    cmd.remove("--lazy-prompt-embeddings")
+    assert cmd == _golden_vision_cmd()

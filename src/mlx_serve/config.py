@@ -99,9 +99,12 @@ class ModelConfig:
     cache_session_shrink: bool | None = None
     # M57 attention dispatch policy (vision only): "" / "auto" => worker default, not passed.
     attention_policy: str = ""
+    # Lazy per-chunk prompt embeddings (vision only); None/False => flag not passed.
+    lazy_prompt_embeddings: bool | None = None
 
     def __post_init__(self) -> None:
         self._validate_cache_session_shrink()
+        self._validate_lazy_prompt_embeddings()
         self._validate_attention_policy()
 
     def _validate_cache_session_shrink(self) -> None:
@@ -112,6 +115,18 @@ class ModelConfig:
         if self.type != "vision":
             raise ValueError(
                 f"Model '{self.name}': cache_session_shrink is only supported for type 'vision'."
+            )
+
+    def _validate_lazy_prompt_embeddings(self) -> None:
+        if self.lazy_prompt_embeddings is None:
+            return
+        if type(self.lazy_prompt_embeddings) is not bool:
+            raise ValueError(
+                f"Model '{self.name}': lazy_prompt_embeddings must be a bool or null."
+            )
+        if self.type != "vision":
+            raise ValueError(
+                f"Model '{self.name}': lazy_prompt_embeddings is only supported for type 'vision'."
             )
 
     def _validate_attention_policy(self) -> None:
@@ -188,6 +203,7 @@ def _load() -> tuple[dict[str, ModelConfig], int, int, int, int, MonitoringConfi
             draft_model=entry.get("draft_model", ""),
             moe_expand=entry.get("moe_expand", ""),
             attention_policy=entry.get("attention_policy", ""),
+            lazy_prompt_embeddings=entry.get("lazy_prompt_embeddings"),
         )
         if (
             models[entry["name"]].kv_prealloc_tokens
