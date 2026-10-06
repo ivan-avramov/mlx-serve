@@ -497,27 +497,55 @@ def test_mtp_verify_joint_v1_rejects_non_vision():
         )  # fmt: skip
 
 
-# --- review R1: a KV quantization scheme is incompatible with the native-KV-only policies --------
+# --- golden: the REAL stack registry must keep loading, and the shipped first pick's worker
+# command must be byte-identical to the one `main` builds (no new flags) -------------------------
+import os as _os
+from pathlib import Path as _Path
+
+_STACK_REGISTRY = _Path(
+    _os.environ.get("MLX_STACK_REGISTRY")
+    or _Path(__file__).resolve().parents[2] / "mlx_local_stack" / "main_models.yaml"
+)
+_FIRST_PICK = "Qwen3.8-27B-Fable-Distill-OptiQ-4.5bpw-mixed"
+# Captured from `main` (7be6bfd) on the stack registry; /⁠ stands for the vision executable.
+_FIRST_PICK_MAIN_COMMAND = ['/', '--model', 'caslca/Qwen3.8-27B-Fable-Distill-OptiQ-4.5bpw-mixed', '--host', '127.0.0.1', '--port', "{port}", '--max-kv-size', '262144', '--kv-prealloc-tokens', '262144', '--cache-session-shrink', 'on', '--attention-policy', 'fused_v1', '--lazy-prompt-embeddings', '--kv-quant-scheme', 'turboquant', '--prefill-step-size', '512', '--generation-defaults', '{"temperature": 0.5, "top_p": 0.95, "top_k": 20, "min_p": 0.0, "presence_penalty": 0.0, "max_tokens": 102400, "thinking_budget": 81920, "enable_thinking": true, "reasoning_effort": "medium"}', '--draft-kind', 'mtp', '--draft-model', 'caslca/Qwen3.8-27B-Fable-Distill-OptiQ-4.5bpw-mixed-mtp-drafter', '--quantized-kv-start', '0', '--memory-limit-frac', '0.85']
 
 
-@pytest.mark.parametrize("scheme", ["uniform", "turboquant"])
-def test_native_kv_policies_reject_a_kv_quant_scheme(scheme):
+@pytest.mark.skipif(not _STACK_REGISTRY.exists(), reason="stack main_models.yaml not present")
+def test_golden_every_real_registry_entry_validates(monkeypatch):
+    from mlx_serve import config
+
+    monkeypatch.setattr(config, "_CONFIG_PATH", _STACK_REGISTRY)
+    models = config._load()[0]
+    assert _FIRST_PICK in models
+    first = models[_FIRST_PICK]
+    # the shipped state this guards: turboquant scheme with kv_bits 0 is a NATIVE cache
+    assert (first.kv_bits, first.kv_quant_scheme, first.attention_policy) == (0, "turboquant", "fused_v1")
+
+
+@pytest.mark.skipif(not _STACK_REGISTRY.exists(), reason="stack main_models.yaml not present")
+def test_golden_first_pick_command_is_byte_identical_to_main(monkeypatch):
+    from pathlib import Path
+
+    from mlx_serve import config
+    from mlx_serve import process_manager as pm
+
+    monkeypatch.setattr(config, "_CONFIG_PATH", _STACK_REGISTRY)
+    monkeypatch.setattr(pm, "_MLX_VLM_SERVER", Path("/"))
+    cmd = pm._build_command(config._load()[0][_FIRST_PICK])
+    expected = [str(config.MLX_PORT) if a == "{port}" else a for a in _FIRST_PICK_MAIN_COMMAND]
+    assert cmd == expected
+    assert "--mtp-verify-scan" not in cmd and "--mtp-verify-ab" not in cmd
+
+
+@pytest.mark.parametrize("scheme", ["", "uniform", "turboquant"])
+def test_native_kv_is_decided_by_kv_bits_only_not_the_scheme_string(scheme):
     from mlx_serve.config import ModelConfig
 
-    with pytest.raises(ValueError, match="configured.*joint_v1.*kv_quant_scheme"):
-        ModelConfig(
-            name="configured", type="vision", hf_path="x", draft_kind="mtp",
-            kv_quant_scheme=scheme, mtp_verify_scan="joint_v1",
-        )  # fmt: skip
-    with pytest.raises(ValueError, match="configured.*fused_v1.*kv_quant_scheme"):
-        ModelConfig(
-            name="configured", type="vision", hf_path="x",
-            kv_quant_scheme=scheme, attention_policy="fused_v1",
-        )  # fmt: skip
-
-
-def test_empty_kv_quant_scheme_still_accepted_by_both_policies():
-    from mlx_serve.config import ModelConfig
-
-    ModelConfig(name="c", type="vision", hf_path="x", draft_kind="mtp", mtp_verify_scan="joint_v1")
-    ModelConfig(name="c", type="vision", hf_path="x", attention_policy="fused_v1")
+    ModelConfig(name="c", type="vision", hf_path="x", draft_kind="mtp", kv_bits=0,
+                kv_quant_scheme=scheme, mtp_verify_scan="joint_v1")
+    ModelConfig(name="c", type="vision", hf_path="x", kv_bits=0, kv_quant_scheme=scheme,
+                attention_policy="fused_v1")
+    with pytest.raises(ValueError, match="kv_bits"):
+        ModelConfig(name="c", type="vision", hf_path="x", draft_kind="mtp", kv_bits=4,
+                    kv_quant_scheme=scheme, mtp_verify_scan="joint_v1")
