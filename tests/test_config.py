@@ -495,3 +495,29 @@ def test_mtp_verify_joint_v1_rejects_non_vision():
             name="configured", type="text", hf_path="x", draft_kind="mtp",
             mtp_verify_scan="joint_v1",
         )  # fmt: skip
+
+
+# --- review R1: a KV quantization scheme is incompatible with the native-KV-only policies --------
+
+
+@pytest.mark.parametrize("scheme", ["uniform", "turboquant"])
+def test_native_kv_policies_reject_a_kv_quant_scheme(scheme):
+    from mlx_serve.config import ModelConfig
+
+    with pytest.raises(ValueError, match="configured.*joint_v1.*kv_quant_scheme"):
+        ModelConfig(
+            name="configured", type="vision", hf_path="x", draft_kind="mtp",
+            kv_quant_scheme=scheme, mtp_verify_scan="joint_v1",
+        )  # fmt: skip
+    with pytest.raises(ValueError, match="configured.*fused_v1.*kv_quant_scheme"):
+        ModelConfig(
+            name="configured", type="vision", hf_path="x",
+            kv_quant_scheme=scheme, attention_policy="fused_v1",
+        )  # fmt: skip
+
+
+def test_empty_kv_quant_scheme_still_accepted_by_both_policies():
+    from mlx_serve.config import ModelConfig
+
+    ModelConfig(name="c", type="vision", hf_path="x", draft_kind="mtp", mtp_verify_scan="joint_v1")
+    ModelConfig(name="c", type="vision", hf_path="x", attention_policy="fused_v1")

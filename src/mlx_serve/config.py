@@ -152,6 +152,12 @@ class ModelConfig:
                     f"Model '{self.name}': attention_policy 'fused_v1' requires kv_bits 0 "
                     f"(got {self.kv_bits})."
                 )
+            # Review R1: both policies are native-KV only; a scheme names a quantized cache.
+            if self.kv_quant_scheme:
+                raise ValueError(
+                    f"Model '{self.name}': attention_policy 'fused_v1' requires an empty "
+                    f"kv_quant_scheme (got {self.kv_quant_scheme!r})."
+                )
 
     def _validate_mtp_verify_scan(self) -> None:
         if self.mtp_verify_scan not in _MTP_VERIFY_SCANS:
@@ -176,6 +182,11 @@ class ModelConfig:
                 raise ValueError(
                     f"Model '{self.name}': mtp_verify_scan 'joint_v1' requires kv_bits 0 "
                     f"(got {self.kv_bits})."
+                )
+            if self.kv_quant_scheme:  # review R1: same native-KV-only rule as fused_v1
+                raise ValueError(
+                    f"Model '{self.name}': mtp_verify_scan 'joint_v1' requires an empty "
+                    f"kv_quant_scheme (got {self.kv_quant_scheme!r})."
                 )
         if self.mtp_verify_ab and self.mtp_verify_scan != "joint_v1":
             raise ValueError(
