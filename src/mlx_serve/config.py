@@ -52,6 +52,7 @@ _CONFIG_PATH = _find_config()
 
 
 _ATTENTION_POLICIES = ("", "auto", "fused_v1")
+_MTP_VERIFY_SCANS = ("", "per_query", "joint_v1")
 
 
 @dataclass
@@ -101,11 +102,16 @@ class ModelConfig:
     attention_policy: str = ""
     # Lazy per-chunk prompt embeddings (vision only); None/False => flag not passed.
     lazy_prompt_embeddings: bool | None = None
+    # M58 MTP verification scan (vision only): "" / "per_query" => worker default, not passed.
+    mtp_verify_scan: str = ""
+    # M58 gate-1 instrument (requires joint_v1); False => flag not passed.
+    mtp_verify_ab: bool = False
 
     def __post_init__(self) -> None:
         self._validate_cache_session_shrink()
         self._validate_lazy_prompt_embeddings()
         self._validate_attention_policy()
+        self._validate_mtp_verify_scan()
 
     def _validate_cache_session_shrink(self) -> None:
         if self.cache_session_shrink is None:
@@ -146,6 +152,35 @@ class ModelConfig:
                     f"Model '{self.name}': attention_policy 'fused_v1' requires kv_bits 0 "
                     f"(got {self.kv_bits})."
                 )
+
+    def _validate_mtp_verify_scan(self) -> None:
+        if self.mtp_verify_scan not in _MTP_VERIFY_SCANS:
+            allowed = ", ".join(repr(v) for v in _MTP_VERIFY_SCANS)
+            raise ValueError(
+                f"Model '{self.name}': mtp_verify_scan {self.mtp_verify_scan!r} is invalid; "
+                f"allowed values: {allowed}."
+            )
+        if type(self.mtp_verify_ab) is not bool:
+            raise ValueError(f"Model '{self.name}': mtp_verify_ab must be a bool.")
+        if self.mtp_verify_scan == "joint_v1":
+            if self.type != "vision":
+                raise ValueError(
+                    f"Model '{self.name}': mtp_verify_scan 'joint_v1' requires type 'vision'."
+                )
+            if self.draft_kind != "mtp":
+                raise ValueError(
+                    f"Model '{self.name}': mtp_verify_scan 'joint_v1' requires draft_kind 'mtp' "
+                    f"(got {self.draft_kind!r})."
+                )
+            if self.kv_bits != 0:
+                raise ValueError(
+                    f"Model '{self.name}': mtp_verify_scan 'joint_v1' requires kv_bits 0 "
+                    f"(got {self.kv_bits})."
+                )
+        if self.mtp_verify_ab and self.mtp_verify_scan != "joint_v1":
+            raise ValueError(
+                f"Model '{self.name}': mtp_verify_ab requires mtp_verify_scan 'joint_v1'."
+            )
 
 
 @dataclass
@@ -204,6 +239,8 @@ def _load() -> tuple[dict[str, ModelConfig], int, int, int, int, MonitoringConfi
             moe_expand=entry.get("moe_expand", ""),
             attention_policy=entry.get("attention_policy", ""),
             lazy_prompt_embeddings=entry.get("lazy_prompt_embeddings"),
+            mtp_verify_scan=entry.get("mtp_verify_scan", ""),
+            mtp_verify_ab=entry.get("mtp_verify_ab", False),
         )
         if (
             models[entry["name"]].kv_prealloc_tokens

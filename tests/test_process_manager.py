@@ -359,3 +359,48 @@ def test_lazy_prompt_embeddings_true_emits_bare_flag_for_vision(monkeypatch):
     assert cmd.count("--lazy-prompt-embeddings") == 1
     cmd.remove("--lazy-prompt-embeddings")
     assert cmd == _golden_vision_cmd()
+
+
+# --- M58 mtp_verify_scan / mtp_verify_ab -----------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        {},
+        {"mtp_verify_scan": ""},
+        {"mtp_verify_scan": "per_query"},
+        {"mtp_verify_ab": False},
+    ],
+)
+def test_mtp_verify_scan_default_command_is_byte_identical(monkeypatch, extra):
+    monkeypatch.setattr(pm, "_MLX_VLM_SERVER", Path("/"))
+    cmd = pm._build_command(ModelConfig(**_GOLDEN_VISION_KW, **extra))
+    assert cmd == _golden_vision_cmd()
+
+
+def test_mtp_verify_scan_joint_v1_emitted_for_vision(monkeypatch):
+    monkeypatch.setattr(pm, "_MLX_VLM_SERVER", Path("/"))
+    cmd = pm._build_command(ModelConfig(**_GOLDEN_VISION_KW, mtp_verify_scan="joint_v1"))
+    assert cmd.count("--mtp-verify-scan") == 1
+    assert cmd[cmd.index("--mtp-verify-scan") + 1] == "joint_v1"
+    assert "--mtp-verify-ab" not in cmd
+    cmd.remove("--mtp-verify-scan")
+    cmd.remove("joint_v1")
+    assert cmd == _golden_vision_cmd()
+
+
+def test_mtp_verify_ab_emitted_only_with_joint_v1(monkeypatch):
+    monkeypatch.setattr(pm, "_MLX_VLM_SERVER", Path("/"))
+    cmd = pm._build_command(
+        ModelConfig(**_GOLDEN_VISION_KW, mtp_verify_scan="joint_v1", mtp_verify_ab=True)
+    )
+    assert cmd.count("--mtp-verify-ab") == 1
+    cmd = [a for a in cmd if a not in ("--mtp-verify-scan", "joint_v1", "--mtp-verify-ab")]
+    assert cmd == _golden_vision_cmd()
+
+
+def test_mtp_verify_scan_not_emitted_for_text(monkeypatch):
+    monkeypatch.setattr(pm, "_MLX_LM_SERVER", Path("/"))
+    model = ModelConfig(name="t", type="text", hf_path="x", mtp_verify_scan="per_query")
+    assert "--mtp-verify-scan" not in pm._build_command(model)

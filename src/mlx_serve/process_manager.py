@@ -144,6 +144,10 @@ def _build_command(model_cfg: config.ModelConfig) -> list[str]:
         cmd += ["--attention-policy", model_cfg.attention_policy]
     if model_cfg.type == "vision" and model_cfg.lazy_prompt_embeddings is True:
         cmd += ["--lazy-prompt-embeddings"]
+    if model_cfg.type == "vision" and model_cfg.mtp_verify_scan not in ("", "per_query"):
+        cmd += ["--mtp-verify-scan", model_cfg.mtp_verify_scan]
+        if model_cfg.mtp_verify_ab:
+            cmd += ["--mtp-verify-ab"]
 
     if model_cfg.kv_bits > 0:
         cmd += ["--kv-bits", str(model_cfg.kv_bits)]

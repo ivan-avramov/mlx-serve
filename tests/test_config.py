@@ -405,3 +405,93 @@ def test_lazy_prompt_embeddings_rejects_non_bool(tmp_path, monkeypatch, value):
 def test_lazy_prompt_embeddings_rejects_non_vision(tmp_path, monkeypatch, model_type, value):
     with pytest.raises(ValueError, match="configured.*lazy_prompt_embeddings.*vision"):
         _load_lazy_setting(tmp_path, monkeypatch, value, model_type)
+
+
+# --- M58 mtp_verify_scan / mtp_verify_ab -------------------------------------------------------
+
+
+def _load_mtp_verify(tmp_path, monkeypatch, **extra):
+    import yaml
+    from mlx_serve import config
+
+    entry = {"name": "configured", "type": "vision", "hf_path": "local-model", **extra}
+    path = tmp_path / "mtp-verify.yaml"
+    path.write_text(yaml.safe_dump({"models": [entry]}))
+    monkeypatch.setattr(config, "_CONFIG_PATH", path)
+    return config._load()[0]["configured"]
+
+
+def test_mtp_verify_defaults_when_absent(tmp_path, monkeypatch):
+    model = _load_mtp_verify(tmp_path, monkeypatch)
+    assert model.mtp_verify_scan == "" and model.mtp_verify_ab is False
+
+
+@pytest.mark.parametrize("value", ["", "per_query"])
+def test_mtp_verify_scan_default_values_need_no_companions(tmp_path, monkeypatch, value):
+    assert _load_mtp_verify(tmp_path, monkeypatch, mtp_verify_scan=value).mtp_verify_scan == value
+
+
+def test_mtp_verify_joint_v1_loaded_from_registry(tmp_path, monkeypatch):
+    model = _load_mtp_verify(
+        tmp_path, monkeypatch, mtp_verify_scan="joint_v1", draft_kind="mtp", mtp_verify_ab=True
+    )
+    assert (model.mtp_verify_scan, model.mtp_verify_ab) == ("joint_v1", True)
+
+
+@pytest.mark.parametrize("value", ["joint_v2", "JOINT_V1", "off", "auto"])
+def test_mtp_verify_scan_rejects_unknown_value(tmp_path, monkeypatch, value):
+    with pytest.raises(ValueError, match="configured.*mtp_verify_scan.*joint_v1"):
+        _load_mtp_verify(tmp_path, monkeypatch, mtp_verify_scan=value, draft_kind="mtp")
+
+
+@pytest.mark.parametrize("kind", ["", "suffix", "dflash", "eagle3"])
+def test_mtp_verify_joint_v1_requires_draft_kind_mtp(kind):
+    from mlx_serve.config import ModelConfig
+
+    with pytest.raises(ValueError, match="configured.*joint_v1.*draft_kind"):
+        ModelConfig(
+            name="configured", type="vision", hf_path="x", draft_kind=kind,
+            mtp_verify_scan="joint_v1",
+        )  # fmt: skip
+
+
+def test_mtp_verify_joint_v1_rejects_quantized_kv():
+    from mlx_serve.config import ModelConfig
+
+    with pytest.raises(ValueError, match="configured.*joint_v1.*kv_bits"):
+        ModelConfig(
+            name="configured", type="vision", hf_path="x", draft_kind="mtp", kv_bits=4,
+            mtp_verify_scan="joint_v1",
+        )  # fmt: skip
+
+
+@pytest.mark.parametrize("scan", ["", "per_query"])
+def test_mtp_verify_ab_requires_joint_v1(scan):
+    from mlx_serve.config import ModelConfig
+
+    with pytest.raises(ValueError, match="configured.*mtp_verify_ab.*joint_v1"):
+        ModelConfig(
+            name="configured", type="vision", hf_path="x", draft_kind="mtp",
+            mtp_verify_scan=scan, mtp_verify_ab=True,
+        )  # fmt: skip
+
+
+@pytest.mark.parametrize("value", [1, "yes", None])
+def test_mtp_verify_ab_must_be_a_bool(value):
+    from mlx_serve.config import ModelConfig
+
+    with pytest.raises(ValueError, match="configured.*mtp_verify_ab.*bool"):
+        ModelConfig(
+            name="configured", type="vision", hf_path="x", draft_kind="mtp",
+            mtp_verify_scan="joint_v1", mtp_verify_ab=value,
+        )  # fmt: skip
+
+
+def test_mtp_verify_joint_v1_rejects_non_vision():
+    from mlx_serve.config import ModelConfig
+
+    with pytest.raises(ValueError, match="configured.*joint_v1.*vision"):
+        ModelConfig(
+            name="configured", type="text", hf_path="x", draft_kind="mtp",
+            mtp_verify_scan="joint_v1",
+        )  # fmt: skip
