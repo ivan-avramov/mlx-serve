@@ -505,24 +505,64 @@ from pathlib import Path as _Path
 _FIRST_PICK = "Qwen3.8-27B-Fable-Distill-OptiQ-4.5bpw-mixed"
 
 
+import sys
+
+SIBLING_REGISTRY = Path(__file__).resolve().parents[2] / "mlx_local_stack" / "main_models.yaml"
+FIXTURE_REGISTRY = Path(__file__).resolve().parent / "fixtures" / "stack_registry_golden.yaml"
+FIXTURE_MARKER = "# ---- BEGIN VERBATIM main_models.yaml ----\n"
+FIXTURE_SHA256 = "323ee54aa5ddc1cea312bd0729079f7a7a45d6b57b6370747b741d9bb734f64f"
+
+
 def _stack_registry():
-    """Resolve the stack registry: env MLX_STACK_REGISTRY, else the sibling checkout. A set-but-
-    absent MLX_STACK_REGISTRY FAILS (never skips). With neither present the test skips LOUDLY
-    unless MLX_REQUIRE_STACK_REGISTRY=1, which makes the skip a failure: CI must set it (or run
-    `-m requires_stack_registry` and treat any skip as a failure)."""
+    """Resolve the stack registry for the golden tests: env MLX_STACK_REGISTRY (a set-but-absent
+    value FAILS), else the sibling stack checkout, else the PINNED fixture copy (so CI always runs
+    them; the workflows also set MLX_REQUIRE_STACK_REGISTRY=1). The fixture is a verbatim copy of
+    main_models.yaml, see its header for the refresh procedure."""
     env = _os.environ.get("MLX_STACK_REGISTRY")
     if env:
-        if not _Path(env).exists():
+        if not Path(env).exists():
             pytest.fail(f"MLX_STACK_REGISTRY={env!r} does not exist")
-        return _Path(env)
-    path = _Path(__file__).resolve().parents[2] / "mlx_local_stack" / "main_models.yaml"
-    if not path.exists():
-        msg = (f"GOLDEN TEST NOT RUN: no stack registry at {path} (set MLX_STACK_REGISTRY); the "
-               f"shipped first-pick configuration is UNVERIFIED on this machine")
-        if _os.environ.get("MLX_REQUIRE_STACK_REGISTRY") == "1":
-            pytest.fail(msg)
-        pytest.skip(msg)
-    return path
+        return Path(env)
+    sibling = SIBLING_REGISTRY
+    if sibling.exists():
+        return sibling
+    if FIXTURE_REGISTRY.exists():
+        return FIXTURE_REGISTRY
+    pytest.fail(f"no stack registry: no MLX_STACK_REGISTRY, no {sibling}, no fixture {FIXTURE_REGISTRY}")
+
+
+def _fixture_verbatim() -> str:
+    return FIXTURE_REGISTRY.read_text().split(FIXTURE_MARKER, 1)[1]
+
+
+def test_golden_fixture_matches_its_recorded_sha():
+    import hashlib
+
+    assert hashlib.sha256(_fixture_verbatim().encode()).hexdigest() == FIXTURE_SHA256, (
+        "stack_registry_golden.yaml changed: refresh procedure is in its header (update the sha)")
+
+
+def test_golden_sibling_registry_drift_warns_but_does_not_fail():
+    import warnings
+
+    if not SIBLING_REGISTRY.exists():
+        pytest.skip("no sibling stack checkout on this machine")
+    if SIBLING_REGISTRY.read_text() != _fixture_verbatim():
+        warnings.warn("the sibling stack registry differs from the pinned golden fixture; "
+                      "refresh tests/fixtures/stack_registry_golden.yaml", stacklevel=1)
+
+
+def test_golden_registry_resolution_rules(monkeypatch, tmp_path):
+    monkeypatch.setenv("MLX_STACK_REGISTRY", str(tmp_path / "nope.yaml"))
+    with pytest.raises(pytest.fail.Exception, match="does not exist"):
+        _stack_registry()
+    present = tmp_path / "r.yaml"
+    present.write_text("models: []")
+    monkeypatch.setenv("MLX_STACK_REGISTRY", str(present))
+    assert _stack_registry() == present
+    monkeypatch.delenv("MLX_STACK_REGISTRY")
+    monkeypatch.setattr(sys.modules[__name__], "SIBLING_REGISTRY", tmp_path / "absent.yaml")
+    assert _stack_registry() == FIXTURE_REGISTRY
 
 
 def _main_command_for(entry, port):
@@ -593,16 +633,6 @@ def test_golden_first_pick_command_is_what_main_builds_for_the_same_registry(mon
             "--memory-limit-frac", str(entry.get("memory_limit_frac", 0.85))]
     assert cmd == expected + tail
     assert "--mtp-verify-scan" not in cmd and "--mtp-verify-ab" not in cmd
-
-
-def test_golden_registry_resolution_rules(monkeypatch, tmp_path):
-    monkeypatch.setenv("MLX_STACK_REGISTRY", str(tmp_path / "nope.yaml"))
-    with pytest.raises(pytest.fail.Exception, match="does not exist"):
-        _stack_registry()
-    present = tmp_path / "r.yaml"
-    present.write_text("models: []")
-    monkeypatch.setenv("MLX_STACK_REGISTRY", str(present))
-    assert _stack_registry() == present
 
 
 @pytest.mark.parametrize("scheme", ["", "uniform", "turboquant"])

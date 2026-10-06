@@ -35,6 +35,8 @@ jobs:
         run: uv run ruff format --check src/ tests/
 
       - name: Test
+        env:
+          MLX_REQUIRE_STACK_REGISTRY: "1"   # golden registry tests must run (pinned fixture), never skip
         run: uv run pytest tests/ -v
 
       - name: Minimize uv cache
