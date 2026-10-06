@@ -498,24 +498,75 @@ def test_mtp_verify_joint_v1_rejects_non_vision():
 
 
 # --- golden: the REAL stack registry must keep loading, and the shipped first pick's worker
-# command must be byte-identical to the one `main` builds (no new flags) -------------------------
+# command must be what `main` builds for the same registry (no new flags) -------------------------
 import os as _os
 from pathlib import Path as _Path
 
-_STACK_REGISTRY = _Path(
-    _os.environ.get("MLX_STACK_REGISTRY")
-    or _Path(__file__).resolve().parents[2] / "mlx_local_stack" / "main_models.yaml"
-)
 _FIRST_PICK = "Qwen3.8-27B-Fable-Distill-OptiQ-4.5bpw-mixed"
-# Captured from `main` (7be6bfd) on the stack registry; /⁠ stands for the vision executable.
-_FIRST_PICK_MAIN_COMMAND = ['/', '--model', 'caslca/Qwen3.8-27B-Fable-Distill-OptiQ-4.5bpw-mixed', '--host', '127.0.0.1', '--port', "{port}", '--max-kv-size', '262144', '--kv-prealloc-tokens', '262144', '--cache-session-shrink', 'on', '--attention-policy', 'fused_v1', '--lazy-prompt-embeddings', '--kv-quant-scheme', 'turboquant', '--prefill-step-size', '512', '--generation-defaults', '{"temperature": 0.5, "top_p": 0.95, "top_k": 20, "min_p": 0.0, "presence_penalty": 0.0, "max_tokens": 102400, "thinking_budget": 81920, "enable_thinking": true, "reasoning_effort": "medium"}', '--draft-kind', 'mtp', '--draft-model', 'caslca/Qwen3.8-27B-Fable-Distill-OptiQ-4.5bpw-mixed-mtp-drafter', '--quantized-kv-start', '0', '--memory-limit-frac', '0.85']
 
 
-@pytest.mark.skipif(not _STACK_REGISTRY.exists(), reason="stack main_models.yaml not present")
+def _stack_registry():
+    """Resolve the stack registry: env MLX_STACK_REGISTRY, else the sibling checkout. A set-but-
+    absent MLX_STACK_REGISTRY FAILS (never skips). With neither present the test skips LOUDLY
+    unless MLX_REQUIRE_STACK_REGISTRY=1, which makes the skip a failure: CI must set it (or run
+    `-m requires_stack_registry` and treat any skip as a failure)."""
+    env = _os.environ.get("MLX_STACK_REGISTRY")
+    if env:
+        if not _Path(env).exists():
+            pytest.fail(f"MLX_STACK_REGISTRY={env!r} does not exist")
+        return _Path(env)
+    path = _Path(__file__).resolve().parents[2] / "mlx_local_stack" / "main_models.yaml"
+    if not path.exists():
+        msg = (f"GOLDEN TEST NOT RUN: no stack registry at {path} (set MLX_STACK_REGISTRY); the "
+               f"shipped first-pick configuration is UNVERIFIED on this machine")
+        if _os.environ.get("MLX_REQUIRE_STACK_REGISTRY") == "1":
+            pytest.fail(msg)
+        pytest.skip(msg)
+    return path
+
+
+def _main_command_for(entry, port):
+    """What `main`'s _build_command emits for this vision entry, written out from the entry's own
+    fields (so a legitimate registry edit does not break the golden): no M58 flags."""
+    import json
+
+    cmd = ["/", "--model", entry["hf_path"], "--host", "127.0.0.1", "--port", str(port)]
+    if entry.get("context_length", 0) > 0:
+        cmd += ["--max-tokens", str(entry["context_length"])]
+    if entry.get("max_kv_cache_size", 0) > 0:
+        cmd += ["--max-kv-size", str(entry["max_kv_cache_size"])]
+    if entry.get("kv_prealloc_tokens", 0) > 0:
+        cmd += ["--kv-prealloc-tokens", str(entry["kv_prealloc_tokens"])]
+    if entry.get("cache_session_shrink") is not None:
+        cmd += ["--cache-session-shrink", "on" if entry["cache_session_shrink"] else "off"]
+    if entry.get("attention_policy") not in (None, "", "auto"):
+        cmd += ["--attention-policy", entry["attention_policy"]]
+    if entry.get("lazy_prompt_embeddings") is True:
+        cmd += ["--lazy-prompt-embeddings"]
+    if entry.get("kv_bits", 0) > 0:
+        cmd += ["--kv-bits", str(entry["kv_bits"])]
+    if entry.get("kv_quant_scheme"):
+        cmd += ["--kv-quant-scheme", entry["kv_quant_scheme"]]
+    if entry.get("moe_expand"):
+        cmd += ["--moe-expand", entry["moe_expand"]]
+    if entry.get("kv_quant_mode"):
+        cmd += ["--kv-quant-mode", entry["kv_quant_mode"]]
+    if entry.get("prefill_step_size"):
+        cmd += ["--prefill-step-size", str(entry["prefill_step_size"])]
+    if entry.get("generation_defaults"):
+        cmd += ["--generation-defaults", json.dumps(entry["generation_defaults"])]
+    if entry.get("draft_kind"):
+        cmd += ["--draft-kind", entry["draft_kind"]]
+        if entry.get("draft_model"):
+            cmd += ["--draft-model", entry["draft_model"]]
+    return cmd
+
+
+@pytest.mark.requires_stack_registry
 def test_golden_every_real_registry_entry_validates(monkeypatch):
     from mlx_serve import config
 
-    monkeypatch.setattr(config, "_CONFIG_PATH", _STACK_REGISTRY)
+    monkeypatch.setattr(config, "_CONFIG_PATH", _stack_registry())
     models = config._load()[0]
     assert _FIRST_PICK in models
     first = models[_FIRST_PICK]
@@ -523,19 +574,35 @@ def test_golden_every_real_registry_entry_validates(monkeypatch):
     assert (first.kv_bits, first.kv_quant_scheme, first.attention_policy) == (0, "turboquant", "fused_v1")
 
 
-@pytest.mark.skipif(not _STACK_REGISTRY.exists(), reason="stack main_models.yaml not present")
-def test_golden_first_pick_command_is_byte_identical_to_main(monkeypatch):
+@pytest.mark.requires_stack_registry
+def test_golden_first_pick_command_is_what_main_builds_for_the_same_registry(monkeypatch):
+    import yaml
     from pathlib import Path
 
     from mlx_serve import config
     from mlx_serve import process_manager as pm
 
-    monkeypatch.setattr(config, "_CONFIG_PATH", _STACK_REGISTRY)
+    path = _stack_registry()
+    monkeypatch.setattr(config, "_CONFIG_PATH", path)
     monkeypatch.setattr(pm, "_MLX_VLM_SERVER", Path("/"))
+    entry = next(e for e in yaml.safe_load(path.read_text())["models"] if e["name"] == _FIRST_PICK)
     cmd = pm._build_command(config._load()[0][_FIRST_PICK])
-    expected = [str(config.MLX_PORT) if a == "{port}" else a for a in _FIRST_PICK_MAIN_COMMAND]
-    assert cmd == expected
+    expected = _main_command_for(entry, config.MLX_PORT)
+    # the tail flags `main` appends for every vision model with these fields
+    tail = ["--quantized-kv-start", str(entry.get("quantized_kv_start", 0)),
+            "--memory-limit-frac", str(entry.get("memory_limit_frac", 0.85))]
+    assert cmd == expected + tail
     assert "--mtp-verify-scan" not in cmd and "--mtp-verify-ab" not in cmd
+
+
+def test_golden_registry_resolution_rules(monkeypatch, tmp_path):
+    monkeypatch.setenv("MLX_STACK_REGISTRY", str(tmp_path / "nope.yaml"))
+    with pytest.raises(pytest.fail.Exception, match="does not exist"):
+        _stack_registry()
+    present = tmp_path / "r.yaml"
+    present.write_text("models: []")
+    monkeypatch.setenv("MLX_STACK_REGISTRY", str(present))
+    assert _stack_registry() == present
 
 
 @pytest.mark.parametrize("scheme", ["", "uniform", "turboquant"])
