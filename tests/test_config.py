@@ -514,21 +514,42 @@ FIXTURE_SHA256 = "323ee54aa5ddc1cea312bd0729079f7a7a45d6b57b6370747b741d9bb734f6
 
 
 def _stack_registry():
-    """Resolve the stack registry for the golden tests: env MLX_STACK_REGISTRY (a set-but-absent
-    value FAILS), else the sibling stack checkout, else the PINNED fixture copy (so CI always runs
-    them; the workflows also set MLX_REQUIRE_STACK_REGISTRY=1). The fixture is a verbatim copy of
-    main_models.yaml, see its header for the refresh procedure."""
+    """Resolve the stack registry for the golden tests.
+
+    Default: env MLX_STACK_REGISTRY (set-but-absent FAILS), else the sibling stack checkout, else
+    the PINNED fixture (a verbatim copy; CI has no sibling), warning when no live one exists.
+    With MLX_REQUIRE_STACK_REGISTRY=1 (operator machines) the LIVE registry is mandatory: the env
+    path or the sibling must exist AND equal the pinned fixture, else FAIL (refresh the fixture)."""
+    import warnings
+
     env = _os.environ.get("MLX_STACK_REGISTRY")
+    required = _os.environ.get("MLX_REQUIRE_STACK_REGISTRY") == "1"
     if env:
         if not Path(env).exists():
             pytest.fail(f"MLX_STACK_REGISTRY={env!r} does not exist")
-        return Path(env)
-    sibling = SIBLING_REGISTRY
-    if sibling.exists():
-        return sibling
-    if FIXTURE_REGISTRY.exists():
-        return FIXTURE_REGISTRY
-    pytest.fail(f"no stack registry: no MLX_STACK_REGISTRY, no {sibling}, no fixture {FIXTURE_REGISTRY}")
+        live = Path(env)
+    elif SIBLING_REGISTRY.exists():
+        live = SIBLING_REGISTRY
+    else:
+        live = None
+    if required:
+        if live is None:
+            pytest.fail(
+                "MLX_REQUIRE_STACK_REGISTRY=1 but no live stack registry (MLX_STACK_REGISTRY "
+                f"or {SIBLING_REGISTRY}) exists"
+            )
+        if live.read_text() != _fixture_verbatim():
+            pytest.fail(
+                f"the live registry {live} differs from the pinned golden fixture; "
+                "refresh stack_registry_golden.yaml (see its header)"
+            )
+        return live
+    if live is not None:
+        return live
+    if not FIXTURE_REGISTRY.exists():
+        pytest.fail(f"no stack registry and no fixture {FIXTURE_REGISTRY}")
+    warnings.warn("no live stack registry; golden tests run against the PINNED fixture", stacklevel=2)
+    return FIXTURE_REGISTRY
 
 
 def _fixture_verbatim() -> str:
@@ -562,7 +583,26 @@ def test_golden_registry_resolution_rules(monkeypatch, tmp_path):
     assert _stack_registry() == present
     monkeypatch.delenv("MLX_STACK_REGISTRY")
     monkeypatch.setattr(sys.modules[__name__], "SIBLING_REGISTRY", tmp_path / "absent.yaml")
-    assert _stack_registry() == FIXTURE_REGISTRY
+    monkeypatch.delenv("MLX_REQUIRE_STACK_REGISTRY", raising=False)
+    with pytest.warns(UserWarning, match="PINNED fixture"):
+        assert _stack_registry() == FIXTURE_REGISTRY
+
+
+def test_e3_require_mode_demands_a_live_registry_equal_to_the_fixture(monkeypatch, tmp_path):
+    monkeypatch.setenv("MLX_REQUIRE_STACK_REGISTRY", "1")
+    monkeypatch.delenv("MLX_STACK_REGISTRY", raising=False)
+    monkeypatch.setattr(sys.modules[__name__], "SIBLING_REGISTRY", tmp_path / "absent.yaml")
+    with pytest.raises(pytest.fail.Exception, match="no live stack registry"):
+        _stack_registry()
+    drifted = tmp_path / "live.yaml"
+    drifted.write_text(_fixture_verbatim() + "# edited\n")
+    monkeypatch.setenv("MLX_STACK_REGISTRY", str(drifted))
+    with pytest.raises(pytest.fail.Exception, match="differs from the pinned golden fixture"):
+        _stack_registry()
+    same = tmp_path / "same.yaml"
+    same.write_text(_fixture_verbatim())
+    monkeypatch.setenv("MLX_STACK_REGISTRY", str(same))
+    assert _stack_registry() == same
 
 
 def _main_command_for(entry, port):
