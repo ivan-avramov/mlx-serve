@@ -48,6 +48,7 @@ _INSTALL_HINTS = {
     "embedding": "pip install mlx-serve[embeddings]",
     "tts": "pip install mlx-serve[tts]",
     "stt": "pip install mlx-serve[stt]",
+    "decision": "pip install mlx-serve[decision]",
 }
 
 
@@ -73,6 +74,16 @@ def _load_stt(hf_path: str) -> tuple[str, None]:
     except ImportError:
         raise RuntimeError(f"mlx-whisper is not installed. Run: {_INSTALL_HINTS['stt']}")
     return hf_path, None
+
+
+def _load_decision(hf_path: str, batch_size: int = 16, dtype: str = "float16") -> tuple[Any, None]:
+    """Load a Laya decision model via laya_mlx. Returns (agent, None)."""
+    try:
+        import laya_mlx as laya
+    except ImportError:
+        raise RuntimeError(f"laya-mlx is not installed. Run: {_INSTALL_HINTS['decision']}")
+    agent = laya.load(hf_path, dtype=dtype, batch_size=batch_size)
+    return agent, None
 
 
 # ---------------------------------------------------------------------------
@@ -125,6 +136,16 @@ def _run_stt(hf_path: str, audio_bytes: bytes, language: str | None) -> str:
         return result.get("text", "").strip()
     finally:
         tmp.unlink(missing_ok=True)
+
+
+def _run_decision(
+    agent: Any,
+    state: str | dict | list,
+    questions: dict,
+) -> dict:
+    """Run a Laya predict call. Returns the full result dict."""
+    result = agent.predict(state, questions)
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -182,6 +203,10 @@ async def ensure_model(model_name: str) -> tuple[Any, Any]:
                 _model, _processor = await loop.run_in_executor(None, _load_tts, model_cfg.hf_path)
             elif model_cfg.type == "stt":
                 _model, _processor = await loop.run_in_executor(None, _load_stt, model_cfg.hf_path)
+            elif model_cfg.type == "decision":
+                _model, _processor = await loop.run_in_executor(
+                    None, _load_decision, model_cfg.hf_path
+                )
             _state = InlineModelState.READY
         except Exception as exc:
             _state = InlineModelState.FAILED
@@ -234,7 +259,11 @@ async def ensure_model(model_name: str) -> tuple[Any, Any]:
 
 
 def _unload_unsafe() -> None:
-    """Zero out model state. Must only be called while holding _load_lock."""
+    """Zero out model state. Must only be called while holding _load_lock.
+
+    After clearing Python references, flushes MLX caches and streams so
+    Metal GPU memory is fully released before the next model loads.
+    """
     global _state, _active_model, _model, _processor, _inactivity_timeout
     prev_model = _active_model
     _model = None
@@ -243,6 +272,17 @@ def _unload_unsafe() -> None:
     _active_model = None
     _inactivity_timeout = config.INACTIVITY_TIMEOUT  # reset per-request override
     gc.collect()
+
+    # Flush MLX Metal caches so GPU memory is fully reclaimed before the
+    # next model loads. Without this, switching between in-process models
+    # that use MLX (e.g. Laya decision models) can hit broken-pipe errors.
+    try:
+        import mlx.core as mx
+
+        mx.clear_cache()
+        mx.clear_streams()
+    except Exception:
+        pass
 
     if prev_model is not None:
         snap = metrics.take_memory_snapshot(active_model=None, event="model_unloaded")
@@ -293,6 +333,13 @@ async def generate_stt(model_name: str, audio_bytes: bytes, language: str | None
     hf_path, _ = await ensure_model(model_name)
     loop = asyncio.get_running_loop()
     return await loop.run_in_executor(None, _run_stt, hf_path, audio_bytes, language)
+
+
+async def generate_decision(model_name: str, state: str | dict | list, questions: dict) -> dict:
+    """Run a Laya decision model predict and return the full result."""
+    agent, _ = await ensure_model(model_name)
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, _run_decision, agent, state, questions)
 
 
 async def start_inactivity_watcher() -> None:

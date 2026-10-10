@@ -686,3 +686,84 @@ def test_native_kv_is_decided_by_kv_bits_only_not_the_scheme_string(scheme):
     with pytest.raises(ValueError, match="kv_bits"):
         ModelConfig(name="c", type="vision", hf_path="x", draft_kind="mtp", kv_bits=4,
                     kv_quant_scheme=scheme, mtp_verify_scan="joint_v1")
+
+
+# --------------------------------------------------------------------------- upstream v0.2.0 sync
+# `extra_body` (upstream) and `generation_defaults` (fork) both supply per-model defaults
+# that the request overrides; they differ in layer (router body merge vs worker CLI arg).
+# Adopted as-is for body keys the worker does not model; sampling/thinking stay in
+# generation_defaults, and a key in both is rejected so neither can shadow the other.
+def _write_models(tmp_path, model_block: str):
+    config_file = tmp_path / "models.yaml"
+    config_file.write_text(f"""
+mlx_port: 8091
+manager_port: 8095
+inactivity_timeout_seconds: 600
+startup_timeout_seconds: 120
+models:
+  - name: m
+    type: vision
+    hf_path: mlx-community/test
+{model_block}
+""")
+    return config_file
+
+
+def _reload_config(monkeypatch, config_file):
+    import importlib
+
+    import mlx_serve.config as cfg
+
+    monkeypatch.setenv("MLX_SERVE_CONFIG", str(config_file))
+    return importlib.reload(cfg)
+
+
+def test_config_parses_extra_body_alongside_generation_defaults(tmp_path, monkeypatch):
+    cfg = _reload_config(monkeypatch, _write_models(tmp_path, """
+    generation_defaults:
+      temperature: 0.3
+    extra_body:
+      chat_template_kwargs:
+        preserve_thinking: true
+      response_format:
+        type: text
+"""))
+    assert cfg.MODELS["m"].generation_defaults == {"temperature": 0.3}
+    assert cfg.MODELS["m"].extra_body == {
+        "chat_template_kwargs": {"preserve_thinking": True},
+        "response_format": {"type": "text"},
+    }
+
+
+def test_config_extra_body_defaults_empty(tmp_path, monkeypatch):
+    cfg = _reload_config(monkeypatch, _write_models(tmp_path, ""))
+    assert cfg.MODELS["m"].extra_body == {}
+
+
+def test_config_rejects_key_in_both_generation_defaults_and_extra_body(tmp_path, monkeypatch):
+    with pytest.raises(ValueError, match=r"\['temperature'\] set in both"):
+        _reload_config(monkeypatch, _write_models(tmp_path, """
+    generation_defaults:
+      temperature: 0.3
+    extra_body:
+      temperature: 0.7
+"""))
+
+
+def test_config_rejects_enable_thinking_under_extra_body_chat_template_kwargs(
+    tmp_path, monkeypatch
+):
+    """Upstream's README example; our worker reads enable_thinking from generation_defaults."""
+    with pytest.raises(ValueError, match="enable_thinking.*generation_defaults"):
+        _reload_config(monkeypatch, _write_models(tmp_path, """
+    extra_body:
+      chat_template_kwargs:
+        enable_thinking: false
+"""))
+
+
+def test_config_rejects_non_mapping_extra_body(tmp_path, monkeypatch):
+    with pytest.raises(ValueError, match="extra_body must be a mapping"):
+        _reload_config(monkeypatch, _write_models(tmp_path, """
+    extra_body: [1, 2]
+"""))

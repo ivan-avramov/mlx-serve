@@ -42,6 +42,7 @@ def text_model(monkeypatch):
         hf_path="mlx-community/test-text-4bit",
         context_length=4096,
         max_kv_cache_size=None,
+        extra_body={},
     )
     monkeypatch.setattr(config, "MODELS", {"test-text": cfg})
     return cfg
@@ -174,3 +175,57 @@ async def test_chat_completions_forwards_session_headers_to_the_worker(monkeypat
     await router.chat_completions(req)
     assert {k.lower(): v for k, v in seen.items()}.get("x-session-id") == "ses_abc"
     assert "x-foo" not in {k.lower() for k in seen}
+
+
+# --------------------------------------------------------------------------- upstream v0.2.0 sync
+# Upstream merges `extra_body` into the chat body inside its inline chat handler; here the
+# merge lives in the shared helper so BOTH forwarded paths get it. Request values win,
+# nested dicts merge key-wise, and an empty extra_body leaves the body untouched.
+def _model_with_extra_body(monkeypatch, extra_body):
+    cfg = SimpleNamespace(
+        name="test-text",
+        type="text",
+        hf_path="mlx-community/test-text-4bit",
+        context_length=4096,
+        max_kv_cache_size=None,
+        extra_body=extra_body,
+    )
+    monkeypatch.setattr(config, "MODELS", {"test-text": cfg})
+    return cfg
+
+
+async def test_extra_body_merged_into_chat_completions_request_wins(monkeypatch):
+    _model_with_extra_body(
+        monkeypatch,
+        {"chat_template_kwargs": {"a": 1, "b": 2}, "top_k": 20, "stream": False},
+    )
+    captured = await _capture_forward(monkeypatch)
+    await router.chat_completions(
+        _FakeRequest({"model": "test-text", "messages": [], "chat_template_kwargs": {"b": 9}, "top_k": 5})
+    )
+    body = captured["body"]
+    assert body["model"] == "mlx-community/test-text-4bit"
+    assert body["chat_template_kwargs"] == {"a": 1, "b": 9}  # nested: default filled, client wins
+    assert body["top_k"] == 5  # top-level: client wins
+    assert body["stream"] is False  # top-level: default filled
+
+
+async def test_extra_body_merged_into_legacy_completions_too(monkeypatch):
+    _model_with_extra_body(monkeypatch, {"chat_template_kwargs": {"a": 1}})
+    captured = await _capture_forward(monkeypatch)
+    await router.completions(_FakeRequest({"model": "test-text", "prompt": "hello"}))
+    assert captured["url"].endswith("/v1/completions")
+    assert captured["body"]["chat_template_kwargs"] == {"a": 1}
+    assert captured["body"]["prompt"] == "hello"
+
+
+async def test_empty_extra_body_leaves_body_untouched(monkeypatch, text_model):
+    captured = await _capture_forward(monkeypatch)
+    await router.chat_completions(_FakeRequest({"model": "test-text", "messages": []}))
+    assert set(captured["body"]) == {"model", "messages"}
+
+
+def test_merge_defaults_does_not_descend_into_non_dict_client_values():
+    body = {"chat_template_kwargs": "opaque"}
+    router._merge_defaults(body, {"chat_template_kwargs": {"a": 1}})
+    assert body == {"chat_template_kwargs": "opaque"}

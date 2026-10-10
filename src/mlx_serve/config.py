@@ -58,7 +58,7 @@ _MTP_VERIFY_SCANS = ("", "per_query", "joint_v1")
 @dataclass
 class ModelConfig:
     name: str
-    type: str  # "text", "vision", "embedding", "tts", or "stt"
+    type: str  # "text", "vision", "embedding", "tts", "stt", or "decision"
     hf_path: str
     context_length: int = 0  # max output tokens per response (--max-tokens); 0 = server default
     max_kv_cache_size: int = (
@@ -71,7 +71,9 @@ class ModelConfig:
     tool_call_parser: str = ""
     prefill_step_size: int = 2048
     quantized_kv_start: int = 0
-    kv_prealloc_tokens: int = 0  # pre-alloc every KV cache to this token floor; must be <= max_kv_cache_size
+    kv_prealloc_tokens: int = (
+        0  # pre-alloc every KV cache to this token floor; must be <= max_kv_cache_size
+    )
     # MLX Metal buffer-pool cap (GB). 0 = auto-derive in mlx-vlm at startup from
     # n_heads x prefill_step x max_kv_cache_size (+2 GB margin), which bounds RSS to
     # ~= active_peak + cap without throttling intra-chunk score reuse. Set >0 to override.
@@ -86,6 +88,12 @@ class ModelConfig:
     # request omits it (request params always win). enable_thinking lives here now (there is
     # no dedicated top-level enable_thinking field — a stale one fails loud in _load).
     generation_defaults: dict = field(default_factory=dict)
+    # Upstream per-model request-body defaults, merged recursively into every forwarded
+    # text-generation body by the router (client values win). Use it for body keys the
+    # worker does not model as generation params (e.g. chat_template_kwargs); sampling and
+    # thinking defaults belong in generation_defaults. A top-level key present in both is
+    # rejected at load so one value cannot shadow the other.
+    extra_body: dict = field(default_factory=dict)
     # Speculative decoding (vision / mlx-vlm only). draft_kind="suffix" enables the
     # drafter-free n-gram speculator; the rest tune it. Empty/0 => not passed.
     draft_kind: str = ""  # "suffix" | "dflash" | "eagle3" | "mtp"
@@ -112,6 +120,25 @@ class ModelConfig:
         self._validate_lazy_prompt_embeddings()
         self._validate_attention_policy()
         self._validate_mtp_verify_scan()
+        self._validate_extra_body()
+
+    def _validate_extra_body(self) -> None:
+        if not isinstance(self.extra_body, dict):
+            raise ValueError(f"Model '{self.name}': extra_body must be a mapping.")
+        if not isinstance(self.generation_defaults, dict):
+            raise ValueError(f"Model '{self.name}': generation_defaults must be a mapping.")
+        overlap = sorted(set(self.extra_body) & set(self.generation_defaults))
+        if overlap:
+            raise ValueError(
+                f"Model '{self.name}': {overlap} set in both generation_defaults and extra_body; "
+                f"keep each key in exactly one of them (sampling/thinking defaults belong in "
+                f"generation_defaults)."
+            )
+        if "enable_thinking" in (self.extra_body.get("chat_template_kwargs") or {}):
+            raise ValueError(
+                f"Model '{self.name}': extra_body.chat_template_kwargs.enable_thinking is not "
+                f"supported; put 'enable_thinking' in generation_defaults instead."
+            )
 
     def _validate_cache_session_shrink(self) -> None:
         if self.cache_session_shrink is None:
@@ -127,9 +154,7 @@ class ModelConfig:
         if self.lazy_prompt_embeddings is None:
             return
         if type(self.lazy_prompt_embeddings) is not bool:
-            raise ValueError(
-                f"Model '{self.name}': lazy_prompt_embeddings must be a bool or null."
-            )
+            raise ValueError(f"Model '{self.name}': lazy_prompt_embeddings must be a bool or null.")
         if self.type != "vision":
             raise ValueError(
                 f"Model '{self.name}': lazy_prompt_embeddings is only supported for type 'vision'."
@@ -195,7 +220,7 @@ class MonitoringConfig:
     log_retention_mb: int = 50  # per JSONL file
 
 
-_VALID_TYPES = {"text", "vision", "embedding", "tts", "stt"}
+_VALID_TYPES = {"text", "vision", "embedding", "tts", "stt", "decision"}
 
 
 def _load() -> tuple[dict[str, ModelConfig], int, int, int, int, MonitoringConfig]:
@@ -233,6 +258,7 @@ def _load() -> tuple[dict[str, ModelConfig], int, int, int, int, MonitoringConfi
             cache_limit_gb=entry.get("cache_limit_gb", 0.0),
             memory_limit_frac=entry.get("memory_limit_frac", 0.85),
             generation_defaults=entry.get("generation_defaults", {}),
+            extra_body=entry.get("extra_body", {}),
             draft_kind=entry.get("draft_kind", ""),
             draft_block_size=entry.get("draft_block_size", 0),
             suffix_min_match=entry.get("suffix_min_match", 0),

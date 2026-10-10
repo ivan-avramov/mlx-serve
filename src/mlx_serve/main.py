@@ -116,6 +116,4 @@ app.add_api_route("/dashboard", _bare_dashboard, include_in_schema=False)
 
 # Legacy text-completions endpoint also accessible without /v1 prefix.
 # POST, so methods must be set explicitly (add_api_route defaults to GET).
-app.add_api_route(
-    "/completions", _bare_completions, methods=["POST"], include_in_schema=False
-)
+app.add_api_route("/completions", _bare_completions, methods=["POST"], include_in_schema=False)
