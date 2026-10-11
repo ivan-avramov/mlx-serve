@@ -851,14 +851,18 @@ async def get_memory_timeline(last_n: int = 60) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# POST /decisions  (Laya typed decision models)
+# POST /systemone  (Laya typed decision models; /decisions = deprecated alias)
 # ---------------------------------------------------------------------------
 
 
-@router.post("/decisions")
-async def decisions(request: Request) -> dict:
+@router.post("/systemone")
+@router.post("/decisions", deprecated=True)
+async def systemone(request: Request) -> dict:
     """
     Run a typed decision (Laya) model.
+
+    Served at POST /v1/systemone. POST /v1/decisions is a deprecated alias
+    (same handler) kept for existing callers.
 
     Body:
       model: str  — model name from models.yaml
@@ -868,9 +872,13 @@ async def decisions(request: Request) -> dict:
             "question_name": {
               "type": "choice" | "score" | "noul",
               "instructions": "...",
-              "criteria": ["opt1", "opt2"]  # for choice/score
+              "criteria": ...  # passed through to laya_mlx unchanged
             }
           }
+      criteria (as accepted by laya_mlx 0.2.0 agent.py): choice = dict
+          {"<key>": "<text>"} (System One wire) or list of unique strings
+          (converted to a dict with no descriptions); score = non-empty list;
+          noul = dict {"false": "...", "true": "..."}.
       keep_alive: str | null  — optional inactivity override
 
     Returns the full Laya result dict including answers, probabilities, and token usage.
@@ -915,7 +923,7 @@ async def decisions(request: Request) -> dict:
         inline_manager.set_keep_alive(keep_alive)
 
     logger.info(
-        f"POST /v1/decisions model={model_name} state_len={len(str(state))} questions={len(questions)}"
+        f"POST /v1/systemone model={model_name} state_len={len(str(state))} questions={len(questions)}"
     )
     request_start = time.monotonic()
 
@@ -927,7 +935,7 @@ async def decisions(request: Request) -> dict:
         metrics.RequestMetrics(
             request_id=str(uuid.uuid4()),
             model=model_name,
-            endpoint="/v1/decisions",
+            endpoint="/v1/systemone",
             timestamp=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             started_at=request_start,
             total_duration_ms=round(total_ms, 1),

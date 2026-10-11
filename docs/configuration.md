@@ -58,7 +58,7 @@ Controls how the model is loaded and which inference path is used.
 | `embedding` | in-process — `mlx-embeddings` | `/v1/embeddings` |
 | `tts` | in-process — `mlx-audio` | `/v1/audio/speech` |
 | `stt` | in-process — `mlx-whisper` | `/v1/audio/transcriptions` |
-| `decision` | in-process — `laya_mlx` | `/v1/decisions` |
+| `decision` | in-process — `laya_mlx` | `/v1/systemone` |
 
 Invalid types are rejected at startup with a clear error message.
 

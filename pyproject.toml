@@ -1,6 +1,6 @@
 [project]
 name = "mlx-serve"
-version = "0.2.0"
+version = "0.3.0"
 description = "Local inference server for Apple Silicon that hot-swaps MLX models (LLM, vision, embeddings, TTS, STT) via OpenAI-compatible API"
 readme = "README.md"
 license = "MIT"

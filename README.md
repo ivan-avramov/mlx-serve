@@ -93,7 +93,7 @@ curl http://localhost:8095/v1/models
 | `embedding` | `mlx-embeddings` in-process | `/v1/embeddings` | `["embedding"]` |
 | `tts` | `mlx-audio` in-process | `/v1/audio/speech` | `["audio_speech"]` |
 | `stt` | `mlx-whisper` in-process | `/v1/audio/transcriptions` | `["audio_transcription"]` |
-| `decision` | `laya_mlx` in-process | `/v1/decisions` | `["decision"]` |
+| `decision` | `laya_mlx` in-process | `/v1/systemone` | `["decision"]` |
 
 ---
 
@@ -150,7 +150,7 @@ curl http://localhost:8095/v1/audio/transcriptions \
 ### Typed decisions (Laya)
 
 ```bash
-curl http://localhost:8095/v1/decisions \
+curl http://localhost:8095/v1/systemone \
   -H "Content-Type: application/json" \
   -d '{
     "model": "laya-en",

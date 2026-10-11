@@ -35,7 +35,7 @@ When `MLX_API_KEY` is unset (default), authentication is disabled — safe for l
 | `POST` | `/v1/embeddings` | Generate embeddings |
 | `POST` | `/v1/audio/speech` | Text-to-speech |
 | `POST` | `/v1/audio/transcriptions` | Speech-to-text |
-| `POST` | `/v1/decisions` | Typed decisions (Laya) |
+| `POST` | `/v1/systemone` | Typed decisions (Laya) |
 | `GET` | `/v1/status` | Manager state + memory stats |
 | `GET` | `/v1/status/logs/{model}` | Last 100 lines of a model's subprocess log |
 | `GET` | `/status` | Same as `/v1/status` (no prefix, operator convenience) |
@@ -110,7 +110,7 @@ Returns all models defined in `models.yaml` with their capabilities.
 | `embedding` | Embeddings via `/v1/embeddings` |
 | `audio_speech` | TTS via `/v1/audio/speech` |
 | `audio_transcription` | STT via `/v1/audio/transcriptions` |
-| `decision` | Typed decisions via `/v1/decisions` |
+| `decision` | Typed decisions via `/v1/systemone` |
 
 **Example**
 
@@ -446,7 +446,7 @@ curl http://localhost:8095/v1/audio/transcriptions \
 
 ---
 
-## POST /v1/decisions
+## POST /v1/systemone
 
 Run a typed decision model (Laya) — choice, score, or boolean (noul) questions against a state. No token-by-token decoding: the model processes bidirectionally and returns probabilities directly.
 
@@ -522,7 +522,7 @@ Each question key is a name you choose. The `type` field controls the output:
 **Example**
 
 ```bash
-curl http://localhost:8095/v1/decisions \
+curl http://localhost:8095/v1/systemone \
   -H "Content-Type: application/json" \
   -d '{
     "model": "laya-en",
@@ -540,7 +540,7 @@ curl http://localhost:8095/v1/decisions \
 Multilingual input (Persian, Arabic, French, etc.):
 
 ```bash
-curl http://localhost:8095/v1/decisions \
+curl http://localhost:8095/v1/systemone \
   -H "Content-Type: application/json" \
   -d '{
     "model": "laya-multilingual",
@@ -643,7 +643,7 @@ All errors follow the OpenAI error format.
 | `400` | Request body is not valid JSON |
 | `400` | `input` field is empty (TTS endpoint) |
 | `404` | Model name not found in `models.yaml` |
-| `404` | Model found but wrong type (e.g. using a `tts` model on `/chat/completions` or a non-decision model on `/decisions`) |
+| `404` | Model found but wrong type (e.g. using a `tts` model on `/chat/completions` or a non-decision model on `/systemone`) |
 | `503` | Model failed to load within `startup_timeout_seconds` |
 
 **Error body**
