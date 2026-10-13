@@ -404,3 +404,66 @@ def test_mtp_verify_scan_not_emitted_for_text(monkeypatch):
     monkeypatch.setattr(pm, "_MLX_LM_SERVER", Path("/"))
     model = ModelConfig(name="t", type="text", hf_path="x", mtp_verify_scan="per_query")
     assert "--mtp-verify-scan" not in pm._build_command(model)
+
+
+# ---------------------------------------------------------------------------
+# Worker exit after READY — reap instead of serving 500 forever
+# ---------------------------------------------------------------------------
+
+
+class _ExitedProc:
+    """A Popen stand-in for a worker that has already exited."""
+
+    pid = 4242
+
+    def __init__(self, code=-9):
+        self.returncode = code
+
+    def poll(self):
+        return self.returncode
+
+
+def _make_ready(pm, model="test-text-model", proc=None):
+    pm._active_model = model
+    pm._state = pm.ModelState.READY
+    pm._process = proc or _ExitedProc()
+
+
+def test_get_status_reaps_exited_worker(reloaded_pm):
+    _make_ready(reloaded_pm)
+    status = reloaded_pm.get_status()
+    assert status["state"] == "idle"
+    assert status["pid"] is None
+    assert status["active_model"] is None
+
+
+def test_reap_leaves_live_worker_alone(reloaded_pm):
+    class Live:
+        pid = 1
+
+        def poll(self):
+            return None
+
+    _make_ready(reloaded_pm, proc=Live())
+    assert reloaded_pm._reap_exited_worker() is False
+    assert reloaded_pm._state == reloaded_pm.ModelState.READY
+
+
+@pytest.mark.asyncio
+async def test_ensure_model_reloads_after_worker_exit(reloaded_pm, monkeypatch):
+    """A worker that died after READY must be reloaded on the next request, not proxied to."""
+    _make_ready(reloaded_pm)
+    switched = []
+
+    async def fake_switch(model_name):
+        switched.append(model_name)
+        reloaded_pm._active_model = model_name
+        reloaded_pm._state = reloaded_pm.ModelState.READY
+        reloaded_pm._process = None
+
+    monkeypatch.setattr(reloaded_pm, "_switch_model", fake_switch)
+    cold = await reloaded_pm.ensure_model("test-text-model")
+    assert switched == ["test-text-model"]
+    assert cold is True
+    # No failure cooldown: the crash is not a load failure.
+    assert reloaded_pm._failure_cooldown_remaining("test-text-model") == 0

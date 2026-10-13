@@ -263,6 +263,37 @@ async def _terminate_current() -> None:
         )
 
 
+def _reap_exited_worker() -> bool:
+    """Notice a READY worker that has exited on its own (crash, OOM kill, external kill).
+
+    The readiness loop only watches the subprocess until it becomes READY; afterwards a dead
+    worker stayed "ready" with its stale pid and every proxied request failed with 500. Reap it
+    here: close handles, emit the crash event and return to IDLE so the next request reloads.
+    No failure cooldown is recorded: this is not a load failure, and a reload is what callers want.
+    Returns True when a dead worker was reaped.
+    """
+    global _process, _state, _active_model, _stderr_log_handle
+    if _process is None or _state != ModelState.READY:
+        return False
+    exit_code = _process.poll()
+    if exit_code is None:
+        return False
+    dead_model, pid = _active_model, _process.pid
+    logger.error(f"Model {dead_model} worker pid={pid} exited with code {exit_code} while READY; reaping")
+    _process = None
+    if _stderr_log_handle is not None:
+        _stderr_log_handle.close()
+        _stderr_log_handle = None
+    _state = ModelState.IDLE
+    _active_model = None
+    events.emit(
+        events.EventType.SUBPROCESS_CRASH,
+        model=dead_model,
+        detail={"pid": pid, "exit_code": exit_code, "phase": "ready"},
+    )
+    return True
+
+
 async def _health_check_loop() -> None:
     """Poll /health every 2s until READY or startup timeout."""
     global _state
@@ -437,6 +468,7 @@ async def ensure_model(model_name: str) -> bool:
     """
     global _last_request_at
 
+    _reap_exited_worker()
     if _active_model == model_name and _state == ModelState.READY:
         _last_request_at = datetime.now(UTC)
         return False  # already warm
@@ -482,6 +514,7 @@ async def start_inactivity_watcher() -> None:
     """Background task: unload idle models every 30s check."""
     while True:
         await asyncio.sleep(30)
+        _reap_exited_worker()
         if (
             _state == ModelState.READY
             and _last_request_at is not None
@@ -508,6 +541,7 @@ async def unload() -> None:
 
 
 def get_status() -> dict:
+    _reap_exited_worker()
     unload_at = None
     if _last_request_at is not None and _inactivity_timeout > 0 and _state == ModelState.READY:
         unload_at = (_last_request_at + timedelta(seconds=_inactivity_timeout)).isoformat()

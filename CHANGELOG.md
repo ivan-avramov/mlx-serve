@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.2.0] - 2026-09-22
 
+### Fixed
+
+- A model worker that exits after becoming READY (crash, OOM kill, external kill) is now reaped on the next request, status read or watcher tick, and the model reloads; previously the manager kept reporting READY with the stale pid and every proxied request failed with 500.
+
+
 ### Added
 
 - New `decision` model type for Laya typed decision models (choice/score/noul)
