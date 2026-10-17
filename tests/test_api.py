@@ -24,6 +24,9 @@ models:
   - name: test-embed
     type: embedding
     hf_path: mlx-community/test-embed
+  - name: test-decision
+    type: decision
+    hf_path: mlx-community/test-decision
 """)
     os.environ["MLX_SERVE_CONFIG"] = str(config_file)
 
@@ -172,3 +175,12 @@ def test_unload_model(client):
     resp = client.post("/v1/models/unload", json={})
     assert resp.status_code == 200
     assert resp.json()["status"] == "unloaded"
+
+
+@pytest.mark.parametrize("path", ["/v1/systemone", "/v1/decisions"])
+def test_decision_paths_registered(client, path):
+    """Both the canonical path and the deprecated alias hit the same handler."""
+    r = client.post(path, json={"model": "test-decision", "questions": {"q": {}}})
+    assert r.status_code == 400  # reaches handler: 'state' required
+    r = client.post(path, json={"model": "nope", "state": "x", "questions": {"q": {}}})
+    assert r.status_code == 404
