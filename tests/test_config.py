@@ -135,7 +135,9 @@ models:
     importlib.reload(cfg)
 
     assert cfg.MODELS["tuned"].generation_defaults == {
-        "temperature": 0.3, "top_p": 0.95, "enable_thinking": True,
+        "temperature": 0.3,
+        "top_p": 0.95,
+        "enable_thinking": True,
     }
     assert cfg.MODELS["plain"].generation_defaults == {}
 
@@ -309,7 +311,10 @@ def test_cache_session_shrink_rejects_unsupported_model_types(
 
 @pytest.mark.parametrize("model_type", ["text", "embedding", "tts", "stt"])
 def test_unset_cache_session_shrink_preserves_other_model_types(tmp_path, monkeypatch, model_type):
-    assert _load_shrink_setting(tmp_path, monkeypatch, model_type=model_type).cache_session_shrink is None
+    assert (
+        _load_shrink_setting(tmp_path, monkeypatch, model_type=model_type).cache_session_shrink
+        is None
+    )
 
 
 def test_direct_model_config_validates_retirement_policy():
@@ -548,7 +553,9 @@ def _stack_registry():
         return live
     if not FIXTURE_REGISTRY.exists():
         pytest.fail(f"no stack registry and no fixture {FIXTURE_REGISTRY}")
-    warnings.warn("no live stack registry; golden tests run against the PINNED fixture", stacklevel=2)
+    warnings.warn(
+        "no live stack registry; golden tests run against the PINNED fixture", stacklevel=2
+    )
     return FIXTURE_REGISTRY
 
 
@@ -560,7 +567,8 @@ def test_golden_fixture_matches_its_recorded_sha():
     import hashlib
 
     assert hashlib.sha256(_fixture_verbatim().encode()).hexdigest() == FIXTURE_SHA256, (
-        "stack_registry_golden.yaml changed: refresh procedure is in its header (update the sha)")
+        "stack_registry_golden.yaml changed: refresh procedure is in its header (update the sha)"
+    )
 
 
 def test_golden_sibling_registry_drift_warns_but_does_not_fail():
@@ -569,8 +577,11 @@ def test_golden_sibling_registry_drift_warns_but_does_not_fail():
     if not SIBLING_REGISTRY.exists():
         pytest.skip("no sibling stack checkout on this machine")
     if SIBLING_REGISTRY.read_text() != _fixture_verbatim():
-        warnings.warn("the sibling stack registry differs from the pinned golden fixture; "
-                      "refresh tests/fixtures/stack_registry_golden.yaml", stacklevel=1)
+        warnings.warn(
+            "the sibling stack registry differs from the pinned golden fixture; "
+            "refresh tests/fixtures/stack_registry_golden.yaml",
+            stacklevel=1,
+        )
 
 
 def test_golden_registry_resolution_rules(monkeypatch, tmp_path):
@@ -651,7 +662,11 @@ def test_golden_every_real_registry_entry_validates(monkeypatch):
     assert _FIRST_PICK in models
     first = models[_FIRST_PICK]
     # the shipped state this guards: turboquant scheme with kv_bits 0 is a NATIVE cache
-    assert (first.kv_bits, first.kv_quant_scheme, first.attention_policy) == (0, "turboquant", "fused_v1")
+    assert (first.kv_bits, first.kv_quant_scheme, first.attention_policy) == (
+        0,
+        "turboquant",
+        "fused_v1",
+    )
 
 
 @pytest.mark.requires_stack_registry
@@ -669,8 +684,12 @@ def test_golden_first_pick_command_is_what_main_builds_for_the_same_registry(mon
     cmd = pm._build_command(config._load()[0][_FIRST_PICK])
     expected = _main_command_for(entry, config.MLX_PORT)
     # the tail flags `main` appends for every vision model with these fields
-    tail = ["--quantized-kv-start", str(entry.get("quantized_kv_start", 0)),
-            "--memory-limit-frac", str(entry.get("memory_limit_frac", 0.85))]
+    tail = [
+        "--quantized-kv-start",
+        str(entry.get("quantized_kv_start", 0)),
+        "--memory-limit-frac",
+        str(entry.get("memory_limit_frac", 0.85)),
+    ]
     assert cmd == expected + tail
     assert "--mtp-verify-scan" not in cmd and "--mtp-verify-ab" not in cmd
 
@@ -679,13 +698,33 @@ def test_golden_first_pick_command_is_what_main_builds_for_the_same_registry(mon
 def test_native_kv_is_decided_by_kv_bits_only_not_the_scheme_string(scheme):
     from mlx_serve.config import ModelConfig
 
-    ModelConfig(name="c", type="vision", hf_path="x", draft_kind="mtp", kv_bits=0,
-                kv_quant_scheme=scheme, mtp_verify_scan="joint_v1")
-    ModelConfig(name="c", type="vision", hf_path="x", kv_bits=0, kv_quant_scheme=scheme,
-                attention_policy="fused_v1")
+    ModelConfig(
+        name="c",
+        type="vision",
+        hf_path="x",
+        draft_kind="mtp",
+        kv_bits=0,
+        kv_quant_scheme=scheme,
+        mtp_verify_scan="joint_v1",
+    )
+    ModelConfig(
+        name="c",
+        type="vision",
+        hf_path="x",
+        kv_bits=0,
+        kv_quant_scheme=scheme,
+        attention_policy="fused_v1",
+    )
     with pytest.raises(ValueError, match="kv_bits"):
-        ModelConfig(name="c", type="vision", hf_path="x", draft_kind="mtp", kv_bits=4,
-                    kv_quant_scheme=scheme, mtp_verify_scan="joint_v1")
+        ModelConfig(
+            name="c",
+            type="vision",
+            hf_path="x",
+            draft_kind="mtp",
+            kv_bits=4,
+            kv_quant_scheme=scheme,
+            mtp_verify_scan="joint_v1",
+        )
 
 
 # --------------------------------------------------------------------------- upstream v0.2.0 sync
@@ -719,7 +758,11 @@ def _reload_config(monkeypatch, config_file):
 
 
 def test_config_parses_extra_body_alongside_generation_defaults(tmp_path, monkeypatch):
-    cfg = _reload_config(monkeypatch, _write_models(tmp_path, """
+    cfg = _reload_config(
+        monkeypatch,
+        _write_models(
+            tmp_path,
+            """
     generation_defaults:
       temperature: 0.3
     extra_body:
@@ -727,7 +770,9 @@ def test_config_parses_extra_body_alongside_generation_defaults(tmp_path, monkey
         preserve_thinking: true
       response_format:
         type: text
-"""))
+""",
+        ),
+    )
     assert cfg.MODELS["m"].generation_defaults == {"temperature": 0.3}
     assert cfg.MODELS["m"].extra_body == {
         "chat_template_kwargs": {"preserve_thinking": True},
@@ -742,12 +787,18 @@ def test_config_extra_body_defaults_empty(tmp_path, monkeypatch):
 
 def test_config_rejects_key_in_both_generation_defaults_and_extra_body(tmp_path, monkeypatch):
     with pytest.raises(ValueError, match=r"\['temperature'\] set in both"):
-        _reload_config(monkeypatch, _write_models(tmp_path, """
+        _reload_config(
+            monkeypatch,
+            _write_models(
+                tmp_path,
+                """
     generation_defaults:
       temperature: 0.3
     extra_body:
       temperature: 0.7
-"""))
+""",
+            ),
+        )
 
 
 def test_config_rejects_enable_thinking_under_extra_body_chat_template_kwargs(
@@ -755,15 +806,27 @@ def test_config_rejects_enable_thinking_under_extra_body_chat_template_kwargs(
 ):
     """Upstream's README example; our worker reads enable_thinking from generation_defaults."""
     with pytest.raises(ValueError, match="enable_thinking.*generation_defaults"):
-        _reload_config(monkeypatch, _write_models(tmp_path, """
+        _reload_config(
+            monkeypatch,
+            _write_models(
+                tmp_path,
+                """
     extra_body:
       chat_template_kwargs:
         enable_thinking: false
-"""))
+""",
+            ),
+        )
 
 
 def test_config_rejects_non_mapping_extra_body(tmp_path, monkeypatch):
     with pytest.raises(ValueError, match="extra_body must be a mapping"):
-        _reload_config(monkeypatch, _write_models(tmp_path, """
+        _reload_config(
+            monkeypatch,
+            _write_models(
+                tmp_path,
+                """
     extra_body: [1, 2]
-"""))
+""",
+            ),
+        )

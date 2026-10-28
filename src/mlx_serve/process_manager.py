@@ -279,7 +279,9 @@ def _reap_exited_worker() -> bool:
     if exit_code is None:
         return False
     dead_model, pid = _active_model, _process.pid
-    logger.error(f"Model {dead_model} worker pid={pid} exited with code {exit_code} while READY; reaping")
+    logger.error(
+        f"Model {dead_model} worker pid={pid} exited with code {exit_code} while READY; reaping"
+    )
     _process = None
     if _stderr_log_handle is not None:
         _stderr_log_handle.close()

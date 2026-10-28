@@ -84,8 +84,9 @@ def test_kv_prealloc_tokens_emitted_for_vision(monkeypatch):
     """--kv-prealloc-tokens is emitted for vision workers when kv_prealloc_tokens > 0."""
     monkeypatch.setattr(pm, "_MLX_VLM_SERVER", Path("/"))
 
-    cfg = ModelConfig(name="m", type="vision", hf_path="x",
-                      max_kv_cache_size=262144, kv_prealloc_tokens=262144)
+    cfg = ModelConfig(
+        name="m", type="vision", hf_path="x", max_kv_cache_size=262144, kv_prealloc_tokens=262144
+    )
     cmd = pm._build_command(cfg)
     assert "--kv-prealloc-tokens" in cmd
     assert cmd[cmd.index("--kv-prealloc-tokens") + 1] == "262144"
@@ -109,10 +110,17 @@ def test_build_command_emits_kv_quant_mode(monkeypatch):
     """--kv-quant-mode is emitted iff ModelConfig.kv_quant_mode is set."""
     monkeypatch.setattr(pm, "_MLX_VLM_SERVER", Path("/"))
 
-    on = ModelConfig(name="t", type="vision", hf_path="x",
-                     kv_bits=3, kv_quant_scheme="turboquant", kv_quant_mode="prod")
-    off = ModelConfig(name="t", type="vision", hf_path="x",
-                      kv_bits=3, kv_quant_scheme="turboquant")  # mode unset
+    on = ModelConfig(
+        name="t",
+        type="vision",
+        hf_path="x",
+        kv_bits=3,
+        kv_quant_scheme="turboquant",
+        kv_quant_mode="prod",
+    )
+    off = ModelConfig(
+        name="t", type="vision", hf_path="x", kv_bits=3, kv_quant_scheme="turboquant"
+    )  # mode unset
 
     cmd_on = pm._build_command(on)
     assert cmd_on[cmd_on.index("--kv-quant-mode") + 1] == "prod"
@@ -138,7 +146,9 @@ def test_build_command_omits_moe_expand_when_empty(monkeypatch):
     monkeypatch.setattr(pm, "_MLX_VLM_SERVER", Path("/"))
     monkeypatch.setattr(pm, "_MLX_LM_SERVER", Path("/"))
 
-    assert "--moe-expand" not in pm._build_command(ModelConfig(name="t", type="vision", hf_path="x"))
+    assert "--moe-expand" not in pm._build_command(
+        ModelConfig(name="t", type="vision", hf_path="x")
+    )
     assert "--moe-expand" not in pm._build_command(ModelConfig(name="t", type="text", hf_path="x"))
 
 
@@ -171,9 +181,7 @@ def test_failure_cooldown_blocks_recent_failure(reloaded_pm):
 def test_failure_cooldown_expires_after_window(reloaded_pm):
     reloaded_pm._record_failure("test-text-model", "startup_timeout")
     # Pretend the failure happened a full cooldown ago.
-    reloaded_pm._last_failure_at = time.monotonic() - (
-        reloaded_pm.config.FAILURE_COOLDOWN + 1
-    )
+    reloaded_pm._last_failure_at = time.monotonic() - (reloaded_pm.config.FAILURE_COOLDOWN + 1)
     assert reloaded_pm._failure_cooldown_remaining("test-text-model") == 0
 
 
@@ -213,9 +221,7 @@ async def test_ensure_model_short_circuits_during_cooldown(reloaded_pm, monkeypa
 # ---------------------------------------------------------------------------
 
 
-def test_readiness_timeout_uses_download_timeout_when_not_cached(
-    reloaded_pm, monkeypatch
-):
+def test_readiness_timeout_uses_download_timeout_when_not_cached(reloaded_pm, monkeypatch):
     monkeypatch.setattr(reloaded_pm, "_is_model_cached", lambda cfg: False)
     cfg = reloaded_pm.config.MODELS["test-text-model"]
     assert reloaded_pm._readiness_timeout(cfg) == reloaded_pm.config.DOWNLOAD_TIMEOUT
@@ -238,17 +244,13 @@ def test_diagnose_failure_reports_actual_timeout(reloaded_pm):
             return None  # process alive -> this is a timeout, not a crash
 
     reloaded_pm._process = StillRunning()
-    detail = reloaded_pm._diagnose_failure(
-        timeout_seconds=reloaded_pm.config.DOWNLOAD_TIMEOUT
-    )
+    detail = reloaded_pm._diagnose_failure(timeout_seconds=reloaded_pm.config.DOWNLOAD_TIMEOUT)
     assert detail["reason"] == "startup_timeout"
     assert detail["timeout_seconds"] == reloaded_pm.config.DOWNLOAD_TIMEOUT
 
 
 @pytest.mark.asyncio
-async def test_switch_emits_downloading_event_when_not_cached(
-    reloaded_pm, monkeypatch
-):
+async def test_switch_emits_downloading_event_when_not_cached(reloaded_pm, monkeypatch):
     """When a model isn't cached, the switch enters DOWNLOADING and emits a
     model.downloading event so the hang is visible to the user."""
     import mlx_serve.events as events
@@ -346,7 +348,9 @@ def test_attention_policy_not_emitted_for_text(monkeypatch):
     assert "--attention-policy" not in pm._build_command(model)
 
 
-@pytest.mark.parametrize("extra", [{}, {"lazy_prompt_embeddings": None}, {"lazy_prompt_embeddings": False}])
+@pytest.mark.parametrize(
+    "extra", [{}, {"lazy_prompt_embeddings": None}, {"lazy_prompt_embeddings": False}]
+)
 def test_lazy_prompt_embeddings_default_command_is_byte_identical(monkeypatch, extra):
     monkeypatch.setattr(pm, "_MLX_VLM_SERVER", Path("/"))
     cmd = pm._build_command(ModelConfig(**_GOLDEN_VISION_KW, **extra))

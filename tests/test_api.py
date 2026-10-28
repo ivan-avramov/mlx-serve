@@ -153,10 +153,7 @@ def test_bare_completions_model_not_found(client):
 def test_completions_routes_registered(client):
     """Both /v1/completions and /completions POST routes must exist and the
     /v1/chat/completions route must remain registered (unchanged)."""
-    routes = {
-        (r.path, frozenset(getattr(r, "methods", None) or set()))
-        for r in client.app.routes
-    }
+    routes = {(r.path, frozenset(getattr(r, "methods", None) or set())) for r in client.app.routes}
     paths = {p for p, _ in routes}
     assert "/v1/completions" in paths
     assert "/completions" in paths

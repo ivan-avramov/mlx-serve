@@ -75,9 +75,7 @@ async def _capture_forward(monkeypatch):
 async def test_completions_forwards_to_v1_completions(monkeypatch, text_model):
     captured = await _capture_forward(monkeypatch)
 
-    resp = await router.completions(
-        _FakeRequest({"model": "test-text", "prompt": "hello"})
-    )
+    resp = await router.completions(_FakeRequest({"model": "test-text", "prompt": "hello"}))
 
     assert isinstance(resp, JSONResponse)
     assert resp.status_code == 200
@@ -93,9 +91,7 @@ async def test_chat_completions_still_forwards_to_chat(monkeypatch, text_model):
     """Regression guard: the chat route must remain unchanged."""
     captured = await _capture_forward(monkeypatch)
 
-    resp = await router.chat_completions(
-        _FakeRequest({"model": "test-text", "messages": []})
-    )
+    resp = await router.chat_completions(_FakeRequest({"model": "test-text", "messages": []}))
 
     assert isinstance(resp, JSONResponse)
     assert captured["url"].endswith("/v1/chat/completions")
@@ -111,7 +107,10 @@ async def test_completions_model_not_found(monkeypatch):
 
 async def test_completions_wrong_type_rejected(monkeypatch):
     cfg = SimpleNamespace(
-        name="emb", type="embedding", hf_path="x", context_length=None,
+        name="emb",
+        type="embedding",
+        hf_path="x",
+        context_length=None,
         max_kv_cache_size=None,
     )
     monkeypatch.setattr(config, "MODELS", {"emb": cfg})
@@ -151,11 +150,28 @@ def test_forward_headers_passes_session_identifiers_and_drops_the_rest():
     }
     out = router._forward_headers(incoming)
     lowered = {k.lower(): v for k, v in out.items()}
-    for name in ("x-mlx-vlm-chat-id", "x-session-id", "x-session-affinity", "x-parent-session-id",
-                 "x-claude-code-session-id", "x-openwebui-chat-id", "session-id", "session_id",
-                 "x-switchyard-session-id", "content-type", "authorization", "x-request-id"):
+    for name in (
+        "x-mlx-vlm-chat-id",
+        "x-session-id",
+        "x-session-affinity",
+        "x-parent-session-id",
+        "x-claude-code-session-id",
+        "x-openwebui-chat-id",
+        "session-id",
+        "session_id",
+        "x-switchyard-session-id",
+        "content-type",
+        "authorization",
+        "x-request-id",
+    ):
         assert name in lowered, f"{name} must be forwarded"
-    for name in ("x-openwebui-user-email", "x-openwebui-user-name", "x-openwebui-user-role", "cookie", "host"):
+    for name in (
+        "x-openwebui-user-email",
+        "x-openwebui-user-name",
+        "x-openwebui-user-role",
+        "cookie",
+        "host",
+    ):
         assert name not in lowered, f"{name} must NOT be forwarded"
     # values pass through untouched
     assert lowered["x-session-id"] == "ses_1" and lowered["x-openwebui-chat-id"] == "owui-1"
@@ -201,7 +217,9 @@ async def test_extra_body_merged_into_chat_completions_request_wins(monkeypatch)
     )
     captured = await _capture_forward(monkeypatch)
     await router.chat_completions(
-        _FakeRequest({"model": "test-text", "messages": [], "chat_template_kwargs": {"b": 9}, "top_k": 5})
+        _FakeRequest(
+            {"model": "test-text", "messages": [], "chat_template_kwargs": {"b": 9}, "top_k": 5}
+        )
     )
     body = captured["body"]
     assert body["model"] == "mlx-community/test-text-4bit"
