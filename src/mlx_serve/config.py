@@ -53,6 +53,22 @@ _CONFIG_PATH = _find_config()
 
 _ATTENTION_POLICIES = ("", "auto", "fused_v1")
 _MTP_VERIFY_SCANS = ("", "per_query", "joint_v1")
+_TQ4_ATTENTION_MODES = ("m72_v1", "m72_exact")
+
+
+def _registry_tq4_attention(entry: dict) -> str:
+    """``tq4_attention`` from a registry entry: "" only when the key is missing; an explicit value must be a mode
+    (YAML ``false`` / ``0`` / ``null`` / ``""`` / a list are refused, never read as absent)."""
+    if "tq4_attention" not in entry:
+        return ""
+    value = entry["tq4_attention"]
+    if isinstance(value, str) and value in _TQ4_ATTENTION_MODES:
+        return value
+    allowed = ", ".join(repr(v) for v in _TQ4_ATTENTION_MODES)
+    raise ValueError(
+        f"Model '{entry.get('name')}': tq4_attention {value!r} is invalid; allowed values: "
+        f"{allowed} (omit the key for absent)."
+    )
 
 
 @dataclass
@@ -114,13 +130,59 @@ class ModelConfig:
     mtp_verify_scan: str = ""
     # M58 gate-1 instrument (requires joint_v1); False => flag not passed.
     mtp_verify_ab: bool = False
+    # M72 TQ4 attention mode (vision only): "" => absent, not passed; "m72_v1" | "m72_exact".
+    tq4_attention: str = ""
 
     def __post_init__(self) -> None:
         self._validate_cache_session_shrink()
         self._validate_lazy_prompt_embeddings()
+        self._validate_tq4_attention()
         self._validate_attention_policy()
         self._validate_mtp_verify_scan()
         self._validate_extra_body()
+
+    def _tq4_kv(self) -> bool:
+        """kv_bits 4 under a TQ4 attention mode: the only quantized KV the policies accept."""
+        return self.kv_bits == 4 and self.tq4_attention in _TQ4_ATTENTION_MODES
+
+    def _validate_tq4_attention(self) -> None:
+        if self.tq4_attention == "":
+            return
+        if self.tq4_attention not in _TQ4_ATTENTION_MODES:
+            allowed = ", ".join(repr(v) for v in ("",) + _TQ4_ATTENTION_MODES)
+            raise ValueError(
+                f"Model '{self.name}': tq4_attention {self.tq4_attention!r} is invalid; "
+                f"allowed values: {allowed}."
+            )
+        mode = self.tq4_attention
+        if self.type != "vision":
+            raise ValueError(f"Model '{self.name}': tq4_attention {mode!r} requires type 'vision'.")
+        if self.kv_bits != 4:
+            raise ValueError(
+                f"Model '{self.name}': tq4_attention {mode!r} requires kv_bits 4 "
+                f"(got {self.kv_bits})."
+            )
+        if self.kv_quant_scheme != "turboquant":
+            raise ValueError(
+                f"Model '{self.name}': tq4_attention {mode!r} requires kv_quant_scheme "
+                f"'turboquant' (got {self.kv_quant_scheme!r})."
+            )
+        if self.attention_policy != "fused_v1":
+            raise ValueError(
+                f"Model '{self.name}': tq4_attention {mode!r} requires attention_policy "
+                f"'fused_v1' (got {self.attention_policy!r})."
+            )
+        if self.mtp_verify_scan != "joint_v1":
+            raise ValueError(
+                f"Model '{self.name}': tq4_attention {mode!r} requires mtp_verify_scan "
+                f"'joint_v1' (got {self.mtp_verify_scan!r})."
+            )
+        # The kernels read the MSE key codec only; "" => not passed => the worker's default "mse".
+        if self.kv_quant_mode not in ("", "mse"):
+            raise ValueError(
+                f"Model '{self.name}': tq4_attention {mode!r} requires kv_quant_mode absent "
+                f"or 'mse' (got {self.kv_quant_mode!r})."
+            )
 
     def _validate_extra_body(self) -> None:
         if not isinstance(self.extra_body, dict):
@@ -172,10 +234,11 @@ class ModelConfig:
                 raise ValueError(
                     f"Model '{self.name}': attention_policy 'fused_v1' requires type 'vision'."
                 )
-            if self.kv_bits != 0:
+            # M72: kv_bits 4 only together with a tq4_attention mode (the native last layer).
+            if self.kv_bits != 0 and not self._tq4_kv():
                 raise ValueError(
                     f"Model '{self.name}': attention_policy 'fused_v1' requires kv_bits 0 "
-                    f"(got {self.kv_bits})."
+                    f"(got {self.kv_bits}), or kv_bits 4 with a tq4_attention mode."
                 )
 
     def _validate_mtp_verify_scan(self) -> None:
@@ -199,10 +262,11 @@ class ModelConfig:
                 )
             # Native KV is decided by kv_bits == 0 ONLY: with kv_bits 0 the worker builds a native
             # cache whatever kv_quant_scheme says (the shipped first pick declares turboquant, 0).
-            if self.kv_bits != 0:
+            # M72: kv_bits 4 only together with a tq4_attention mode (the native last layer).
+            if self.kv_bits != 0 and not self._tq4_kv():
                 raise ValueError(
                     f"Model '{self.name}': mtp_verify_scan 'joint_v1' requires kv_bits 0 "
-                    f"(got {self.kv_bits})."
+                    f"(got {self.kv_bits}), or kv_bits 4 with a tq4_attention mode."
                 )
         if self.mtp_verify_ab and self.mtp_verify_scan != "joint_v1":
             raise ValueError(
@@ -269,6 +333,7 @@ def _load() -> tuple[dict[str, ModelConfig], int, int, int, int, MonitoringConfi
             lazy_prompt_embeddings=entry.get("lazy_prompt_embeddings"),
             mtp_verify_scan=entry.get("mtp_verify_scan", ""),
             mtp_verify_ab=entry.get("mtp_verify_ab", False),
+            tq4_attention=_registry_tq4_attention(entry),
         )
         if (
             models[entry["name"]].kv_prealloc_tokens

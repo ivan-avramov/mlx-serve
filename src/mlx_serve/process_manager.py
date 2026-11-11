@@ -148,6 +148,8 @@ def _build_command(model_cfg: config.ModelConfig) -> list[str]:
         cmd += ["--mtp-verify-scan", model_cfg.mtp_verify_scan]
         if model_cfg.mtp_verify_ab:
             cmd += ["--mtp-verify-ab"]
+    if model_cfg.type == "vision" and model_cfg.tq4_attention:
+        cmd += ["--tq4-attention", model_cfg.tq4_attention]
 
     if model_cfg.kv_bits > 0:
         cmd += ["--kv-bits", str(model_cfg.kv_bits)]
