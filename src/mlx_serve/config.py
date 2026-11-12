@@ -172,7 +172,15 @@ class ModelConfig:
                 f"Model '{self.name}': tq4_attention {mode!r} requires attention_policy "
                 f"'fused_v1' (got {self.attention_policy!r})."
             )
-        if self.mtp_verify_scan != "joint_v1":
+        # M77: draft_kind "mtp" needs joint_v1 (M72). No drafter (MTP OFF) is accepted with no joint scan
+        # and no A/B; every other combination keeps M72's outcome and message (joint_v1 without a drafter
+        # and other drafter kinds with joint_v1 are refused by _validate_mtp_verify_scan).
+        mtp_off = (
+            self.draft_kind == ""
+            and self.mtp_verify_scan in ("", "per_query")
+            and self.mtp_verify_ab is False
+        )
+        if self.mtp_verify_scan != "joint_v1" and not mtp_off:
             raise ValueError(
                 f"Model '{self.name}': tq4_attention {mode!r} requires mtp_verify_scan "
                 f"'joint_v1' (got {self.mtp_verify_scan!r})."
