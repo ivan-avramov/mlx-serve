@@ -618,7 +618,8 @@ def test_e3_require_mode_demands_a_live_registry_equal_to_the_fixture(monkeypatc
 
 def _main_command_for(entry, port):
     """What `main`'s _build_command emits for this vision entry, written out from the entry's own
-    fields (so a legitimate registry edit does not break the golden): no M58 flags."""
+    fields (so a legitimate registry edit does not break the golden), including the verify-scan / A/B (M58)
+    and TQ4 attention (M72) flags the entry carries (S21-P17)."""
     import json
 
     cmd = ["/", "--model", entry["hf_path"], "--host", "127.0.0.1", "--port", str(port)]
@@ -634,6 +635,12 @@ def _main_command_for(entry, port):
         cmd += ["--attention-policy", entry["attention_policy"]]
     if entry.get("lazy_prompt_embeddings") is True:
         cmd += ["--lazy-prompt-embeddings"]
+    if entry.get("mtp_verify_scan") not in (None, "", "per_query"):
+        cmd += ["--mtp-verify-scan", entry["mtp_verify_scan"]]
+        if entry.get("mtp_verify_ab"):
+            cmd += ["--mtp-verify-ab"]
+    if entry.get("tq4_attention"):
+        cmd += ["--tq4-attention", entry["tq4_attention"]]
     if entry.get("kv_bits", 0) > 0:
         cmd += ["--kv-bits", str(entry["kv_bits"])]
     if entry.get("kv_quant_scheme"):
@@ -691,7 +698,6 @@ def test_golden_first_pick_command_is_what_main_builds_for_the_same_registry(mon
         str(entry.get("memory_limit_frac", 0.85)),
     ]
     assert cmd == expected + tail
-    assert "--mtp-verify-scan" not in cmd and "--mtp-verify-ab" not in cmd
 
 
 @pytest.mark.parametrize("scheme", ["", "uniform", "turboquant"])
