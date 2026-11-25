@@ -6,9 +6,10 @@ import json
 import logging
 import pathlib
 import sys
-import tempfile
 import time
 import uuid
+from functools import lru_cache
+from importlib import metadata
 from typing import Any
 
 import httpx
@@ -22,7 +23,6 @@ from . import config, events, inline_manager, metrics, process_manager
 logger = logging.getLogger("mlx-serve.router")
 
 _HTTP_CLIENT = httpx.AsyncClient(timeout=None)
-_LOG_DIR = pathlib.Path(tempfile.gettempdir()) / "mlx-manager-logs"
 _VENV_BIN = pathlib.Path(sys.executable).parent
 
 # Maps model type -> OpenAI-style capabilities array
@@ -872,14 +872,32 @@ async def audio_transcriptions(
 # ---------------------------------------------------------------------------
 
 
-@router.get("/status")
-async def status() -> dict:
+@lru_cache(maxsize=1)
+def _runtime_versions() -> dict:
+    versions = {}
+    for key, package in (("mlx_serve", "mlx-serve"), ("mlx_vlm", "mlx-vlm"), ("mlx", "mlx")):
+        try:
+            versions[key] = metadata.version(package)
+        except metadata.PackageNotFoundError:
+            versions[key] = None
+    return versions
+
+
+async def legacy_status() -> dict:
     return {
         "subprocess": process_manager.get_status(),
         "inline": inline_manager.get_status(),
         "memory": _get_memory_stats(),
         "metal": metrics.get_metal_memory(),
     }
+
+
+@router.get("/status")
+async def status(worker_only: bool = False) -> dict:
+    if worker_only:
+        # Read worker state without querying MLX or altering the workers.
+        return {"subprocess": process_manager.get_status(reap=False), "runtime": _runtime_versions()}
+    return await legacy_status()
 
 
 # ---------------------------------------------------------------------------
@@ -890,22 +908,14 @@ async def status() -> dict:
 @router.get("/status/logs/{model_name}")
 async def model_logs(model_name: str) -> dict:
     """Return the last 100 lines of the subprocess log for the given model."""
-    log_path = _LOG_DIR / f"{model_name}.log"
-    if not log_path.exists():
+    try:
+        lines = process_manager.model_log_tail(model_name)
+    except (OSError, ValueError):
         raise HTTPException(
             status_code=404,
-            detail={
-                "error": {
-                    "message": f"No logs found for '{model_name}'. Logs are only written for subprocess models (text/vision) that have been loaded."
-                }
-            },
-        )
-    lines = log_path.read_text().splitlines()
-    return {
-        "model": model_name,
-        "log_path": str(log_path),
-        "lines": lines[-100:],
-    }
+            detail={"error": {"message": "No subprocess log available for this model."}},
+        ) from None
+    return {"model": model_name, "log_path": str(process_manager._LOG_DIR / f"{model_name}.log"), "lines": lines}
 
 
 # ---------------------------------------------------------------------------

@@ -20,7 +20,7 @@ from .router import dashboard as _bare_dashboard
 from .router import get_events as _bare_events
 from .router import get_metrics as _bare_metrics
 from .router import health as _bare_health
-from .router import status as _bare_status
+from .router import legacy_status as _bare_status
 
 # ---------------------------------------------------------------------------
 # Initialise logging and monitoring subsystems

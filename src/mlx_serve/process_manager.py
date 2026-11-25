@@ -8,11 +8,16 @@ import asyncio
 import contextlib
 import json
 import logging
+import os
 import pathlib
+import re
+import stat
 import subprocess
 import sys
 import tempfile
 import time
+import uuid
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from enum import Enum
 
@@ -29,7 +34,13 @@ _VENV_BIN = pathlib.Path(sys.executable).parent
 _MLX_LM_SERVER = _VENV_BIN / "mlx_lm.server"
 _MLX_VLM_SERVER = _VENV_BIN / "mlx_vlm.server"
 
-_LOG_DIR = pathlib.Path(tempfile.gettempdir()) / "mlx-manager-logs"
+_LOG_DIR = pathlib.Path(os.environ.get("SABLE_MODEL_LOG_DIR") or pathlib.Path(tempfile.gettempdir()) / "mlx-manager-logs")
+_LOG_MODEL_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,159}\Z")
+_VERIFY_PREFERENCE_ENV = "SABLE_MTP_VERIFY_PREFERENCE"
+_VERIFY_WORKER_ENV = "SABLE_MTP_VERIFY_WORKER"
+_VERIFY_RETRY_ENV = "SABLE_MTP_VERIFY_RETRY"
+_VERIFY_PROBE_TIMEOUT_EXIT = 76  # mlx_vlm optional synthetic joint probe only
+_VERIFY_PROBE_TIMEOUT_LINE = b"SABLE_MTP_VERIFY_PROBE_TIMEOUT"
 
 # ---------------------------------------------------------------------------
 # State
@@ -44,10 +55,22 @@ class ModelState(Enum):
     FAILED = "failed"
 
 
+@dataclass
+class _WorkerAttempt:
+    id: str
+    model: str
+    started_at: float
+    failure_reason: str | None = None
+    failure_at: float | None = None
+
+
+_attempt: _WorkerAttempt | None = None
+_last_failed_attempt: _WorkerAttempt | None = None
 _state: ModelState = ModelState.IDLE
 _active_model: str | None = None
 _process: subprocess.Popen | None = None
 _ready_event: asyncio.Event = asyncio.Event()
+_load_timeout: int | None = None
 _switch_lock: asyncio.Lock = asyncio.Lock()
 _last_request_at: datetime | None = None
 _started_at: datetime = datetime.now(UTC)
@@ -73,6 +96,19 @@ def _record_failure(model_name: str, reason: str) -> None:
     _last_failure_at = time.monotonic()
     _last_failed_model = model_name
     _last_failure_reason = reason
+    _mark_attempt_failure(reason)
+
+
+def _mark_attempt_failure(reason: str) -> None:
+    global _last_failed_attempt
+    if _attempt is not None:
+        _attempt.failure_reason = reason
+        _attempt.failure_at = time.time()
+        _last_failed_attempt = _attempt
+
+
+def _attempt_detail() -> dict:
+    return {"attempt_id": _attempt.id} if _attempt else {}
 
 
 def _clear_failure() -> None:
@@ -107,9 +143,11 @@ def _is_model_cached(model_cfg: config.ModelConfig) -> bool:
 
 def _readiness_timeout(model_cfg: config.ModelConfig) -> int:
     """Return the appropriate readiness timeout for this model."""
-    if not _is_model_cached(model_cfg):
-        return config.DOWNLOAD_TIMEOUT
-    return config.STARTUP_TIMEOUT
+    # All callers joining this load see the same interval, even if the files
+    # become cached between the first worker and its one permitted retry.
+    if model_cfg.name == _active_model and _load_timeout is not None:
+        return _load_timeout
+    return config.STARTUP_TIMEOUT if _is_model_cached(model_cfg) else config.DOWNLOAD_TIMEOUT
 
 
 def _build_command(model_cfg: config.ModelConfig) -> list[str]:
@@ -191,13 +229,132 @@ def _build_command(model_cfg: config.ModelConfig) -> list[str]:
     return cmd
 
 
+def _worker_verify_preference(model_cfg: config.ModelConfig) -> str | None:
+    preference = os.environ.get(_VERIFY_PREFERENCE_ENV)
+    if (
+        preference in ("joint-first", "per-query")
+        and model_cfg.type == "vision"
+        and model_cfg.mtp_verify_scan == "joint_v1"
+        and model_cfg.draft_kind == "mtp"
+        and not model_cfg.mtp_verify_ab
+    ):
+        return preference
+    return None
+
+
+def _log_name(model: str) -> str:
+    if not _LOG_MODEL_NAME.fullmatch(model):
+        raise ValueError("invalid model name for worker log")
+    return f"{model}.log"
+
+
+def _open_log_directory() -> int:
+    return os.open(_LOG_DIR, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+
+
+def _open_attempt_log(attempt: _WorkerAttempt):
+    name = _log_name(attempt.model)
+    _LOG_DIR.mkdir(mode=0o700, exist_ok=True)
+    directory = _open_log_directory()
+    tmp = f".{attempt.id}.log"
+    try:
+        fd = os.open(tmp, os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=directory)
+        log = os.fdopen(fd, "w")
+        try:
+            log.write(f"SABLE_MODEL_ATTEMPT id={attempt.id}\n")
+            log.flush()
+            # One atomic replacement publishes the new attempt. Readers of the old
+            # descriptor keep a coherent view of the preceding attempt.
+            os.replace(tmp, name, src_dir_fd=directory, dst_dir_fd=directory)
+        except BaseException:
+            log.close()
+            with contextlib.suppress(OSError):
+                os.unlink(tmp, dir_fd=directory)
+            raise
+        return log
+    finally:
+        os.close(directory)
+
+
+def _tail(fd: int, limit: int) -> bytes:
+    info = os.fstat(fd)
+    if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or info.st_nlink != 1:
+        return b""
+    return os.pread(fd, limit, max(0, info.st_size - limit))
+
+
+def model_log_tail(model_name: str) -> list[str]:
+    name = _log_name(model_name)
+    directory = _open_log_directory()
+    try:
+        fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
+        try:
+            return _tail(fd, 32 * 1024).decode("utf-8", errors="replace").splitlines()[-100:]
+        finally:
+            os.close(fd)
+    finally:
+        os.close(directory)
+
+
+def _saw_verify_probe_timeout() -> bool:
+    if _stderr_log_handle is None:
+        return False
+    try:
+        return _VERIFY_PROBE_TIMEOUT_LINE in _tail(_stderr_log_handle.fileno(), 4096).splitlines()
+    except OSError:
+        return False
+
+
+def _spawn_worker(
+    model_name: str, model_cfg: config.ModelConfig, *, verification_retry: bool = False
+) -> subprocess.Popen:
+    global _attempt, _stderr_log_path, _stderr_log_handle
+    _attempt = _WorkerAttempt(str(uuid.uuid4()), model_name, time.time())
+    _stderr_log_path = None
+    cmd = _build_command(model_cfg)
+    preference = _worker_verify_preference(model_cfg)
+    env = None
+    if preference or _VERIFY_WORKER_ENV in os.environ or _VERIFY_RETRY_ENV in os.environ:
+        env = os.environ.copy()
+        env.pop(_VERIFY_WORKER_ENV, None)
+        env.pop(_VERIFY_RETRY_ENV, None)
+        if preference:
+            env[_VERIFY_WORKER_ENV] = preference
+        if verification_retry:
+            env[_VERIFY_RETRY_ENV] = "probe_timeout"
+
+    _stderr_log_handle = _open_attempt_log(_attempt)
+    _stderr_log_path = _LOG_DIR / _log_name(model_name)
+    logger.info(f"Spawning: {' '.join(cmd)}")
+    try:
+        process = subprocess.Popen(
+            cmd, stdout=subprocess.DEVNULL, stderr=_stderr_log_handle, env=env
+        )
+    except BaseException:
+        _stderr_log_handle.close()
+        _stderr_log_handle = None
+        raise
+
+    events.emit(
+        events.EventType.MODEL_LOADING,
+        model=model_name,
+        detail={"hf_path": model_cfg.hf_path, "type": model_cfg.type, "pid": process.pid, **_attempt_detail()},
+    )
+    events.emit(
+        events.EventType.SUBPROCESS_SPAWNED,
+        model=model_name,
+        detail={"pid": process.pid, "command": cmd, **_attempt_detail()},
+    )
+    return process
+
+
 def _diagnose_failure(timeout_seconds: int | None = None) -> dict:
     """Inspect subprocess state and stderr to determine failure reason.
 
     ``timeout_seconds`` is the readiness deadline that was actually applied
     (download vs. startup), reported back when the failure is a timeout.
     """
-    detail: dict = {}
+    detail: dict = _attempt_detail()
 
     if _process is not None and _process.poll() is not None:
         detail["exit_code"] = _process.returncode
@@ -208,16 +365,17 @@ def _diagnose_failure(timeout_seconds: int | None = None) -> dict:
             timeout_seconds if timeout_seconds is not None else config.STARTUP_TIMEOUT
         )
 
-    if _stderr_log_path and _stderr_log_path.exists():
-        lines = _stderr_log_path.read_text().splitlines()
-        detail["stderr_tail"] = lines[-15:]
-        text = "\n".join(lines).lower()
-        if any(kw in text for kw in ("out of memory", "memoryerror", "malloc", "mlock failed")):
-            detail["reason"] = "oom"
-        elif any(kw in text for kw in ("no such file", "not found", "does not exist")):
-            detail["reason"] = "model_not_found"
-        elif "address already in use" in text:
-            detail["reason"] = "port_conflict"
+    if _stderr_log_handle is not None:
+        with contextlib.suppress(OSError):
+            lines = _tail(_stderr_log_handle.fileno(), 32 * 1024).decode("utf-8", errors="replace").splitlines()
+            detail["stderr_tail"] = [line[-1000:] for line in lines[-15:]]
+            text = "\n".join(lines).lower()
+            if any(kw in text for kw in ("out of memory", "memoryerror", "malloc", "mlock failed")):
+                detail["reason"] = "oom"
+            elif any(kw in text for kw in ("no such file", "not found", "does not exist")):
+                detail["reason"] = "model_not_found"
+            elif "address already in use" in text:
+                detail["reason"] = "port_conflict"
 
     vm = psutil.virtual_memory()
     detail["ram_percent_at_failure"] = vm.percent
@@ -227,28 +385,42 @@ def _diagnose_failure(timeout_seconds: int | None = None) -> dict:
     return detail
 
 
+def _fail_spawn(model_name: str) -> None:
+    global _state
+    _state = ModelState.FAILED
+    _record_failure(model_name, "worker_launch")
+    events.emit(
+        events.EventType.MODEL_FAILED, model=model_name,
+        detail={"reason": "worker_launch", **_attempt_detail()},
+    )
+    _ready_event.set()
+
+
 async def _terminate_current() -> None:
-    global _process, _state, _active_model, _stderr_log_handle, _inactivity_timeout
+    global _attempt, _process, _state, _active_model, _stderr_log_handle, _inactivity_timeout, _ready_event
     prev_model = _active_model
-    if _process is not None:
-        logger.info(f"Terminating subprocess for model={prev_model} pid={_process.pid}")
-        _process.terminate()
+    worker, _process = _process, None
+    _state = ModelState.IDLE
+    _active_model = None
+    _attempt = None
+    _ready_event.set()
+    _ready_event = asyncio.Event()
+    _inactivity_timeout = config.INACTIVITY_TIMEOUT
+    if worker is not None:
+        logger.info(f"Terminating subprocess for model={prev_model} pid={worker.pid}")
+        worker.terminate()
         try:
             await asyncio.wait_for(
-                asyncio.get_running_loop().run_in_executor(None, _process.wait),
+                asyncio.get_running_loop().run_in_executor(None, worker.wait),
                 timeout=5,
             )
         except TimeoutError:
-            logger.warning(f"Subprocess did not exit gracefully, killing pid={_process.pid}")
-            _process.kill()
-            await asyncio.get_running_loop().run_in_executor(None, _process.wait)
-        _process = None
+            logger.warning(f"Subprocess did not exit gracefully, killing pid={worker.pid}")
+            worker.kill()
+            await asyncio.get_running_loop().run_in_executor(None, worker.wait)
     if _stderr_log_handle is not None:
         _stderr_log_handle.close()
         _stderr_log_handle = None
-    _state = ModelState.IDLE
-    _active_model = None
-    _inactivity_timeout = config.INACTIVITY_TIMEOUT  # reset per-request override
 
     if prev_model is not None:
         # Memory snapshot after unload to show freed memory
@@ -288,24 +460,71 @@ def _reap_exited_worker() -> bool:
         _stderr_log_handle = None
     _state = ModelState.IDLE
     _active_model = None
+    _mark_attempt_failure("worker_exit")
     events.emit(
         events.EventType.SUBPROCESS_CRASH,
         model=dead_model,
-        detail={"pid": pid, "exit_code": exit_code, "phase": "ready"},
+        detail={"pid": pid, "exit_code": exit_code, "phase": "ready", **_attempt_detail()},
     )
     return True
 
 
-async def _health_check_loop() -> None:
+async def _health_check_loop(worker=None) -> None:
     """Poll /health every 2s until READY or startup timeout."""
-    global _state
-    model_cfg = config.MODELS.get(_active_model) if _active_model else None
+    global _process, _state, _stderr_log_handle
+    if worker is None:
+        worker = _process
+    model_name = _active_model
+    model_cfg = config.MODELS.get(model_name) if model_name else None
     readiness_timeout = _readiness_timeout(model_cfg) if model_cfg else config.STARTUP_TIMEOUT
-    deadline = datetime.now(UTC) + timedelta(seconds=readiness_timeout)
+    deadline = time.monotonic() + readiness_timeout
+    verification_retried = False
     async with httpx.AsyncClient() as client:
-        while datetime.now(UTC) < deadline:
+        while True:
+            if _process is not worker or _active_model != model_name:
+                return
             # Detect early process exit
-            if _process is not None and _process.poll() is not None:
+            exit_code = worker.poll() if worker is not None else None
+            if exit_code is not None:
+                if (
+                    exit_code == _VERIFY_PROBE_TIMEOUT_EXIT
+                    and not verification_retried
+                    and model_cfg is not None
+                    and _worker_verify_preference(model_cfg) == "joint-first"
+                    and _saw_verify_probe_timeout()
+                ):
+                    async with _switch_lock:
+                        if _process is not worker or _active_model != model_name:
+                            return
+                        verification_retried = True
+                        events.emit(
+                            events.EventType.SUBPROCESS_CRASH,
+                            model=model_name,
+                            detail={
+                                "pid": worker.pid,
+                                "exit_code": exit_code,
+                                "phase": "verification_probe",
+                                **_attempt_detail(),
+                            },
+                        )
+                        logger.warning(
+                            "Joint verification probe timed out for %s; retrying with per-query",
+                            model_name,
+                        )
+                        if _stderr_log_handle is not None:
+                            _stderr_log_handle.close()
+                            _stderr_log_handle = None
+                        try:
+                            _process = worker = _spawn_worker(
+                                model_name, model_cfg, verification_retry=True
+                            )
+                            deadline = time.monotonic() + readiness_timeout
+                        except (OSError, RuntimeError, ValueError):
+                            _process = None
+                            logger.exception("Could not start per-query worker for %s", model_name)
+                            _fail_spawn(model_name)
+                            return
+                    continue
                 _state = ModelState.FAILED
                 _ready_event.set()
                 detail = _diagnose_failure(timeout_seconds=readiness_timeout)
@@ -330,12 +549,17 @@ async def _health_check_loop() -> None:
                     f"(logs: {_stderr_log_path})"
                 )
                 return
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
             try:
                 resp = await client.get(
                     f"http://127.0.0.1:{config.MLX_PORT}/health",
-                    timeout=2,
+                    timeout=min(2, remaining),
                 )
-                if resp.status_code == 200:
+                if _process is not worker or _active_model != model_name:
+                    return
+                if resp.status_code == 200 and worker.poll() is None:
                     _state = ModelState.READY
                     _ready_event.set()
                     _clear_failure()
@@ -359,6 +583,7 @@ async def _health_check_loop() -> None:
                             "ram_used_gb": snap.ram_used_gb,
                             "subprocess_rss_mb": snap.subprocess_rss_mb,
                             "metal_active_mb": snap.metal_active_mb,
+                            **_attempt_detail(),
                         },
                         duration_ms=load_ms,
                     )
@@ -374,9 +599,11 @@ async def _health_check_loop() -> None:
                     return
             except httpx.RequestError:
                 pass
-            await asyncio.sleep(2)
+            await asyncio.sleep(min(2, max(0, deadline - time.monotonic())))
 
     # Timed out
+    if _process is not worker or _active_model != model_name:
+        return
     _state = ModelState.FAILED
     _ready_event.set()
     detail = _diagnose_failure(timeout_seconds=readiness_timeout)
@@ -394,12 +621,12 @@ async def _health_check_loop() -> None:
 
 
 async def _switch_model(model_name: str) -> None:
-    global _process, _state, _active_model, _stderr_log_path, _stderr_log_handle
-    global _loading_started_at
+    global _process, _state, _active_model
+    global _loading_started_at, _load_timeout
 
     async with _switch_lock:
         # Another coroutine may have already loaded this model while we waited
-        if _active_model == model_name and _state == ModelState.READY:
+        if _active_model == model_name and _state in (ModelState.READY, ModelState.LOADING, ModelState.DOWNLOADING):
             return
 
         prev_model = _active_model
@@ -416,7 +643,7 @@ async def _switch_model(model_name: str) -> None:
 
         model_cfg = config.MODELS[model_name]
         cached = _is_model_cached(model_cfg)
-        _ready_event.clear()
+        _load_timeout = config.STARTUP_TIMEOUT if cached else config.DOWNLOAD_TIMEOUT
         _state = ModelState.DOWNLOADING if not cached else ModelState.LOADING
         _active_model = model_name
         _loading_started_at = time.monotonic()
@@ -428,34 +655,17 @@ async def _switch_model(model_name: str) -> None:
                 detail={"hf_path": model_cfg.hf_path},
             )
 
-        _LOG_DIR.mkdir(exist_ok=True)
-        _stderr_log_path = _LOG_DIR / f"{model_name}.log"
-        _stderr_log_handle = _stderr_log_path.open("w")
-
-        cmd = _build_command(model_cfg)
-        logger.info(f"Spawning: {' '.join(cmd)}")
-
-        _process = subprocess.Popen(
-            cmd,
-            stdout=subprocess.DEVNULL,
-            stderr=_stderr_log_handle,
-        )
-
-        events.emit(
-            events.EventType.MODEL_LOADING,
-            model=model_name,
-            detail={"hf_path": model_cfg.hf_path, "type": model_cfg.type, "pid": _process.pid},
-        )
-        events.emit(
-            events.EventType.SUBPROCESS_SPAWNED,
-            model=model_name,
-            detail={"pid": _process.pid, "command": cmd},
-        )
+        try:
+            _process = _spawn_worker(model_name, model_cfg)
+        except (OSError, RuntimeError, ValueError):
+            logger.exception("Could not start worker for %s", model_name)
+            _fail_spawn(model_name)
+            return
 
         # Snapshot before model loads to capture baseline memory
         metrics.take_memory_snapshot(active_model=model_name, event="model_loading")
 
-        asyncio.create_task(_health_check_loop())
+        asyncio.create_task(_health_check_loop(_process))
 
 
 # ---------------------------------------------------------------------------
@@ -492,12 +702,14 @@ async def ensure_model(model_name: str) -> bool:
     if _active_model != model_name or _state in (ModelState.IDLE, ModelState.FAILED):
         await _switch_model(model_name)
 
+    ready_event = _ready_event
     if _state in (ModelState.LOADING, ModelState.DOWNLOADING):
         model_cfg = config.MODELS[model_name]
+        attempts = 2 if _worker_verify_preference(model_cfg) == "joint-first" else 1
         with contextlib.suppress(TimeoutError):
-            await asyncio.wait_for(_ready_event.wait(), timeout=_readiness_timeout(model_cfg) + 5)
+            await asyncio.wait_for(ready_event.wait(), timeout=attempts * _readiness_timeout(model_cfg) + 5)
 
-    if _state == ModelState.FAILED:
+    if ready_event is not _ready_event or _active_model != model_name or _state != ModelState.READY:
         from fastapi import HTTPException
 
         raise HTTPException(status_code=503, detail=f"Model {model_name} failed to load")
@@ -516,25 +728,27 @@ async def start_inactivity_watcher() -> None:
     """Background task: unload idle models every 30s check."""
     while True:
         await asyncio.sleep(30)
-        _reap_exited_worker()
-        if (
-            _state == ModelState.READY
-            and _last_request_at is not None
-            and datetime.now(UTC) - _last_request_at > timedelta(seconds=_inactivity_timeout)
-        ):
-            idle_secs = int((datetime.now(UTC) - _last_request_at).total_seconds())
-            events.emit(
-                events.EventType.MODEL_INACTIVITY_UNLOAD,
-                model=_active_model,
-                detail={"idle_seconds": idle_secs},
-            )
-            logger.info(f"Model {_active_model} idle for {idle_secs}s, unloading")
-            await _terminate_current()
+        async with _switch_lock:
+            _reap_exited_worker()
+            if (
+                _state == ModelState.READY
+                and _last_request_at is not None
+                and datetime.now(UTC) - _last_request_at > timedelta(seconds=_inactivity_timeout)
+            ):
+                idle_secs = int((datetime.now(UTC) - _last_request_at).total_seconds())
+                events.emit(
+                    events.EventType.MODEL_INACTIVITY_UNLOAD,
+                    model=_active_model,
+                    detail={"idle_seconds": idle_secs},
+                )
+                logger.info(f"Model {_active_model} idle for {idle_secs}s, unloading")
+                await _terminate_current()
 
 
 async def unload() -> None:
     """Terminate the active subprocess and reset to IDLE."""
-    await _terminate_current()
+    async with _switch_lock:
+        await _terminate_current()
 
 
 # ---------------------------------------------------------------------------
@@ -542,12 +756,13 @@ async def unload() -> None:
 # ---------------------------------------------------------------------------
 
 
-def get_status() -> dict:
-    _reap_exited_worker()
+def get_status(*, reap: bool = True) -> dict:
+    if reap:
+        _reap_exited_worker()
     unload_at = None
     if _last_request_at is not None and _inactivity_timeout > 0 and _state == ModelState.READY:
         unload_at = (_last_request_at + timedelta(seconds=_inactivity_timeout)).isoformat()
-    return {
+    status = {
         "active_model": _active_model,
         "state": _state.value,
         "pid": _process.pid if _process else None,
@@ -556,6 +771,30 @@ def get_status() -> dict:
         "uptime_seconds": int((datetime.now(UTC) - _started_at).total_seconds()),
         "inactivity_timeout_seconds": _inactivity_timeout,
     }
+    if not reap:
+        # A diagnostic read may precede lifecycle reaping. Project what we observed
+        # without clearing the worker, emitting events, or starting another attempt.
+        exited = _state == ModelState.READY and _process is not None and _process.poll() is not None
+        if exited:
+            status.update(state="failed", pid=None, unload_at=None)
+        failure_reason = "worker_exit" if exited else (_attempt.failure_reason if _attempt else None)
+        failure_at = time.time() if exited else (_attempt.failure_at if _attempt else None)
+        status.update({
+            "attempt_id": _attempt.id if _attempt else None,
+            "attempt_model": _attempt.model if _attempt else None,
+            "attempt_started_at": _attempt.started_at if _attempt else None,
+            "attempt_state": ("failed" if failure_reason else _state.value) if _attempt else None,
+            "failure_reason": failure_reason,
+            "failure_at": failure_at,
+        })
+        if _last_failed_attempt:
+            status["last_failed_attempt"] = {
+                "attempt_id": _last_failed_attempt.id,
+                "model": _last_failed_attempt.model,
+                "reason": _last_failed_attempt.failure_reason,
+                "failure_at": _last_failed_attempt.failure_at,
+            }
+    return status
 
 
 def get_process_pid() -> int | None:
