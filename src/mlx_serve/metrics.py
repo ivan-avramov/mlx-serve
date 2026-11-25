@@ -41,6 +41,13 @@ class RequestMetrics:
     status_code: int = 200
     error: str | None = None
     cold_start: bool = False  # model was loaded on demand
+    first_meaningful_delta_ms: float | None = None
+    first_reasoning_delta_ms: float | None = None
+    first_text_delta_ms: float | None = None
+    first_answer_delta_ms: float | None = None
+    next_text_delta_gap_ms: float | None = None
+    text_delta_chunks: int | None = None
+    completion_tokens_source: str | None = None  # usage or legacy estimate from answer chunks
 
 
 @dataclass
@@ -121,6 +128,19 @@ def record_request(m: RequestMetrics) -> None:
         parts.append("cold_start=true")
     if m.error:
         parts.append(f"error={m.error}")
+    for label, elapsed in (
+        ("first_meaningful_delta", m.first_meaningful_delta_ms),
+        ("first_reasoning_delta", m.first_reasoning_delta_ms),
+        ("first_text_delta", m.first_text_delta_ms),
+        ("first_answer_delta", m.first_answer_delta_ms),
+        ("next_text_delta_gap", m.next_text_delta_gap_ms),
+    ):
+        if elapsed is not None:
+            parts.append(f"{label}={elapsed:.1f}ms")
+    if m.text_delta_chunks is not None:
+        parts.append(f"text_delta_chunks={m.text_delta_chunks}")
+    if m.completion_tokens_source is not None:
+        parts.append(f"completion_tokens_source={m.completion_tokens_source}")
     logger.info(" | ".join(parts))
 
     # Write to JSONL

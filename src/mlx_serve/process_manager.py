@@ -36,6 +36,7 @@ _MLX_VLM_SERVER = _VENV_BIN / "mlx_vlm.server"
 
 _LOG_DIR = pathlib.Path(os.environ.get("SABLE_MODEL_LOG_DIR") or pathlib.Path(tempfile.gettempdir()) / "mlx-manager-logs")
 _LOG_MODEL_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,159}\Z")
+_PREVIOUS_LOG_LIMIT = 32 * 1024
 _VERIFY_PREFERENCE_ENV = "SABLE_MTP_VERIFY_PREFERENCE"
 _VERIFY_WORKER_ENV = "SABLE_MTP_VERIFY_WORKER"
 _VERIFY_RETRY_ENV = "SABLE_MTP_VERIFY_RETRY"
@@ -265,6 +266,10 @@ def _open_attempt_log(attempt: _WorkerAttempt):
             log.flush()
             # One atomic replacement publishes the new attempt. Readers of the old
             # descriptor keep a coherent view of the preceding attempt.
+            try:
+                _archive_attempt_log(directory, name, attempt.id)
+            except OSError as exc:
+                raise OSError(f"Cannot archive {name}; keeping the current worker log") from exc
             os.replace(tmp, name, src_dir_fd=directory, dst_dir_fd=directory)
         except BaseException:
             log.close()
@@ -274,6 +279,50 @@ def _open_attempt_log(attempt: _WorkerAttempt):
         return log
     finally:
         os.close(directory)
+
+
+def _archive_attempt_log(directory: int, name: str, new_attempt_id: str) -> None:
+    try:
+        source = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
+    except FileNotFoundError:
+        return
+    try:
+        info = os.fstat(source)
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or info.st_nlink != 1:
+            raise OSError("Unsafe current worker log")
+        if info.st_size == 0:
+            return
+        offset = max(0, info.st_size - _PREVIOUS_LOG_LIMIT)
+        count = info.st_size - offset
+        tail = os.pread(source, count, offset)
+        if len(tail) != count:
+            raise OSError("Short read of current worker log")
+        if offset:
+            # Keep the prior marker even when the tail starts past the header.
+            head = os.pread(source, 128, 0)
+            if len(head) != 128:
+                raise OSError("Short read of current worker log header")
+            marker, newline, _ = head.partition(b"\n")
+            if newline and marker.startswith(b"SABLE_MODEL_ATTEMPT id="):
+                tail = marker + b"\n" + tail
+            else:
+                # Legacy logs have no attempt marker.
+                tail = b"\n" + tail
+    finally:
+        os.close(source)
+
+    temp = f".{new_attempt_id}.previous.tmp"
+    fd = os.open(
+        temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=directory
+    )
+    try:
+        with os.fdopen(fd, "wb") as archive:
+            if archive.write(tail) != len(tail):
+                raise OSError("Short write of previous worker log")
+        os.replace(temp, f"_previous.{name}", src_dir_fd=directory, dst_dir_fd=directory)
+    finally:
+        with contextlib.suppress(FileNotFoundError):
+            os.unlink(temp, dir_fd=directory)
 
 
 def _tail(fd: int, limit: int) -> bytes:

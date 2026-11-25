@@ -582,6 +582,21 @@ async def _instrumented_proxy_response(
     return JSONResponse(content=resp_json, status_code=resp.status_code)
 
 
+def _tool_text(delta: dict) -> bool:
+    def has_function_text(function) -> bool:
+        return isinstance(function, dict) and any(
+            isinstance(function.get(key), str) and function[key].strip()
+            for key in ("name", "arguments")
+        )
+
+    if has_function_text(delta.get("function_call")):
+        return True
+    calls = delta.get("tool_calls")
+    return isinstance(calls, list) and any(
+        isinstance(call, dict) and has_function_text(call.get("function")) for call in calls
+    )
+
+
 async def _instrumented_stream_response(
     url: str,
     body: dict,
@@ -599,11 +614,6 @@ async def _instrumented_stream_response(
     stream (which clients like OpenWebUI render as a silent blank message).
     """
     request_id = str(uuid.uuid4())
-    first_token_time: float | None = None
-    completion_tokens = 0
-    prompt_tokens_from_usage: int | None = None
-    completion_tokens_from_usage: int | None = None
-
     upstream_request = _HTTP_CLIENT.build_request(
         "POST", url, json=body, headers=_forward_headers(headers)
     )
@@ -646,8 +656,16 @@ async def _instrumented_stream_response(
         return JSONResponse(content=payload, status_code=resp.status_code)
 
     async def generate():
-        nonlocal first_token_time, completion_tokens
-        nonlocal prompt_tokens_from_usage, completion_tokens_from_usage
+        first_token_time: float | None = None
+        first_meaningful_delta_time: float | None = None
+        first_reasoning_delta_time: float | None = None
+        first_text_delta_time: float | None = None
+        first_answer_delta_time: float | None = None
+        next_text_delta_gap_ms: float | None = None
+        text_delta_chunks = 0
+        answer_chunks = 0
+        prompt_tokens_from_usage: int | None = None
+        completion_tokens_from_usage: int | None = None
 
         try:
             async for chunk in resp.aiter_lines():
@@ -655,42 +673,80 @@ async def _instrumented_stream_response(
                     yield chunk + "\n"
                     continue
 
+                received_at = time.monotonic()
                 data_str = chunk[5:].strip()
+                if data_str != "[DONE]":
+                    try:
+                        data = json.loads(data_str)
+                    except json.JSONDecodeError:
+                        data = None
+                    if isinstance(data, dict):
+                        choices = data.get("choices")
+                        if isinstance(choices, list) and choices and isinstance(choices[0], dict):
+                            choice = choices[0]
+                            delta = choice.get("delta")
+                            if not isinstance(delta, dict):
+                                delta = {}
+                            # Keep legacy TTFT/count semantics for completion metrics.
+                            content = delta.get("content")
+                            if isinstance(content, str) and content:
+                                if first_token_time is None:
+                                    first_token_time = received_at
+                                answer_chunks += 1
+
+                            reasoning = any(
+                                isinstance(delta.get(key), str) and delta[key].strip()
+                                for key in ("reasoning_content", "reasoning")
+                            )
+                            answer = content if content is not None else choice.get("text")
+                            has_answer = isinstance(answer, str) and bool(answer.strip())
+                            has_text = reasoning or has_answer
+                            if has_text:
+                                text_delta_chunks += 1
+                                if first_text_delta_time is None:
+                                    first_text_delta_time = received_at
+                                elif next_text_delta_gap_ms is None:
+                                    next_text_delta_gap_ms = round(
+                                        (received_at - first_text_delta_time) * 1000, 1
+                                    )
+                            if reasoning and first_reasoning_delta_time is None:
+                                first_reasoning_delta_time = received_at
+                            if has_answer and first_answer_delta_time is None:
+                                first_answer_delta_time = received_at
+                            if first_meaningful_delta_time is None and (
+                                has_text or _tool_text(delta)
+                            ):
+                                first_meaningful_delta_time = received_at
+
+                        usage = data.get("usage")
+                        if isinstance(usage, dict):
+                            prompt_tokens = usage.get("prompt_tokens")
+                            completion_tokens = usage.get("completion_tokens")
+                            if type(prompt_tokens) is int and prompt_tokens >= 0:
+                                prompt_tokens_from_usage = prompt_tokens
+                            if type(completion_tokens) is int and completion_tokens >= 0:
+                                completion_tokens_from_usage = completion_tokens
+
                 yield chunk + "\n\n"
-
-                if data_str == "[DONE]":
-                    continue
-
-                # Track TTFT and token count
-                try:
-                    data = json.loads(data_str)
-                    choices = data.get("choices", [])
-                    if choices:
-                        delta = choices[0].get("delta", {})
-                        if delta.get("content"):
-                            if first_token_time is None:
-                                first_token_time = time.monotonic()
-                            completion_tokens += 1
-
-                    # mlx_lm may include usage in the final chunk
-                    usage = data.get("usage")
-                    if usage:
-                        prompt_tokens_from_usage = usage.get("prompt_tokens")
-                        completion_tokens_from_usage = usage.get("completion_tokens")
-                except (json.JSONDecodeError, KeyError):
-                    pass
         finally:
             await resp.aclose()
 
-        # Record metrics after stream completes
         end = time.monotonic()
-        total_ms = (end - request_start) * 1000
-        ttft_ms = (first_token_time - request_start) * 1000 if first_token_time else None
 
-        # Use usage-reported tokens if available, else our chunk count
-        final_completion = completion_tokens_from_usage or completion_tokens
+        def elapsed_ms(mark: float | None) -> float | None:
+            return round((mark - request_start) * 1000, 1) if mark is not None else None
+
+        # Preserve the legacy completion-token estimate and label its source.
+        final_completion = completion_tokens_from_usage
+        completion_source = None
+        if final_completion is not None:
+            completion_source = "usage"
+        elif answer_chunks:
+            final_completion = answer_chunks
+            completion_source = "answer_chunks_estimate"
+
         tps = None
-        if final_completion and first_token_time:
+        if final_completion and first_token_time is not None:
             gen_time = end - first_token_time
             if gen_time > 0:
                 tps = round(final_completion / gen_time, 1)
@@ -702,13 +758,20 @@ async def _instrumented_stream_response(
                 endpoint=endpoint,
                 timestamp=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                 started_at=request_start,
-                total_duration_ms=round(total_ms, 1),
-                ttft_ms=round(ttft_ms, 1) if ttft_ms else None,
+                total_duration_ms=round((end - request_start) * 1000, 1),
+                ttft_ms=elapsed_ms(first_token_time),
                 tokens_per_second=tps,
                 prompt_tokens=prompt_tokens_from_usage,
-                completion_tokens=final_completion if final_completion else None,
+                completion_tokens=final_completion,
                 status_code=200,
                 cold_start=cold_start,
+                first_meaningful_delta_ms=elapsed_ms(first_meaningful_delta_time),
+                first_reasoning_delta_ms=elapsed_ms(first_reasoning_delta_time),
+                first_text_delta_ms=elapsed_ms(first_text_delta_time),
+                first_answer_delta_ms=elapsed_ms(first_answer_delta_time),
+                next_text_delta_gap_ms=next_text_delta_gap_ms,
+                text_delta_chunks=text_delta_chunks,
+                completion_tokens_source=completion_source,
             )
         )
 
